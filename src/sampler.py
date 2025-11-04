@@ -10,22 +10,13 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-DATA_DIR = "./data"
-OUTPUT_DIR = "./sampled_graph"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-TARGET_USERS = 20000
-SEED_RATIO = 0.10
-HUB_RATIO = 0.70
-BOT_RATIO_TARGET = 0.14
 CHUNK_SIZE = 100000
-RANDOM_SEED = 42
+np.random.seed(42)
 
-np.random.seed(RANDOM_SEED)
-
-def load_users():
-    user_file = os.path.join(DATA_DIR, "user.json")
-    label_file = os.path.join(DATA_DIR, "label.csv")
+def load_users(input_dir):
+    input_dir = os.path.abspath(input_dir)
+    user_file = os.path.join(input_dir, "user.json")
+    label_file = os.path.join(input_dir, "label.csv")
     
     # Load labels
     labels = pd.read_csv(label_file)
@@ -88,8 +79,10 @@ def load_users():
     return users_df
 
 
-def calculate_degrees(users_df):   
-    edge_file = os.path.join(DATA_DIR, "edge.csv")
+def calculate_degrees(input_dir, users_df):   
+
+    input_dir = os.path.abspath(input_dir)
+    edge_file = os.path.join(input_dir, "edge.csv")
     degree_count = defaultdict(int)
     
     print("Calculating degrees")
@@ -119,7 +112,7 @@ def calculate_degrees(users_df):
     return users_df
 
 
-def select_seeds(users_df):
+def select_seeds(users_df, target_users, seed_ratio, hub_ratio):
     users_df['time_bin'] = pd.qcut(
         users_df['created_at'], 
         q=20, 
@@ -127,7 +120,7 @@ def select_seeds(users_df):
         duplicates='drop'
     )
     
-    n_seeds = int(TARGET_USERS * SEED_RATIO)
+    n_seeds = int(target_users * seed_ratio)
     time_bins = sorted(users_df['time_bin'].dropna().unique())
     seeds_per_bin = max(1, n_seeds // len(time_bins))
     
@@ -143,7 +136,7 @@ def select_seeds(users_df):
                 continue
             
             n = seeds_per_bin // 2
-            n_hubs = int(n * HUB_RATIO)
+            n_hubs = int(n * hub_ratio)
             n_random = n - n_hubs
             
             hubs = label_users.nlargest(
@@ -156,16 +149,17 @@ def select_seeds(users_df):
             if len(remaining) > 0:
                 random_sample = remaining.sample(
                     min(n_random, len(remaining)),
-                    random_state=RANDOM_SEED
+                    random_state=42
                 )['user_id'].values
                 seeds.update(random_sample)
     
     return seeds, users_df
 
 
-def build_adjacency(relevant_users):
+def build_adjacency(input_dir, relevant_users):
     adjacency = defaultdict(set)
-    edge_file = os.path.join(DATA_DIR, "edge.csv")
+    input_dir = os.path.abspath(input_dir)
+    edge_file = os.path.join(input_dir, "edge.csv")
     relevant_users = set(relevant_users)
     
     for chunk in pd.read_csv(edge_file, chunksize=CHUNK_SIZE):
@@ -183,7 +177,7 @@ def build_adjacency(relevant_users):
     return dict(adjacency)
 
 
-def expand_sample(seeds, users_df):
+def expand_sample(seeds: set, users_df, target_users, bot_ratio):
     sampled = seeds.copy()
     adjacency = build_adjacency(sampled)
     
@@ -192,7 +186,7 @@ def expand_sample(seeds, users_df):
     
     print("Expanding sample")
     iteration = 0
-    while len(sampled) < TARGET_USERS and candidate_pool:
+    while len(sampled) < target_users and candidate_pool:
         current = candidate_pool.pop(0)
         
         neighbors = adjacency.get(current, set())
@@ -212,9 +206,9 @@ def expand_sample(seeds, users_df):
                 continue
             is_bot = user_meta[n].get('label') == 'bot'
             
-            if is_bot and bot_ratio > (BOT_RATIO_TARGET + 0.02):
+            if is_bot and bot_ratio > (bot_ratio + 0.02):
                 continue
-            if not is_bot and bot_ratio < (BOT_RATIO_TARGET - 0.02):
+            if not is_bot and bot_ratio < (bot_ratio - 0.02):
                 continue
             
             valid.append(n)
@@ -226,7 +220,7 @@ def expand_sample(seeds, users_df):
         total_deg = sum(degrees)
         probs = np.array(degrees) / total_deg if total_deg > 0 else None
         
-        n_add = min(5, len(valid), TARGET_USERS - len(sampled))
+        n_add = min(5, len(valid), target_users - len(sampled))
         selected = np.random.choice(valid, size=n_add, replace=False, p=probs)
         
         sampled.update(selected)
@@ -234,13 +228,14 @@ def expand_sample(seeds, users_df):
         
         iteration += 1
         if iteration % 1000 == 0:
-            print(f"  Progress: {len(sampled):,}/{TARGET_USERS:,} users")
+            print(f"  Progress: {len(sampled):,}/{target_users:,} users")
     
     return sampled
 
 
-def extract_entities(sampled_user_ids):   
-    edge_file = os.path.join(DATA_DIR, "edge.csv")
+def extract_entities(input_dir, sampled_user_ids):   
+    input_dir = os.path.abspath(input_dir)
+    edge_file = os.path.join(input_dir, "edge.csv")
     
     tweets = set()
     lists = set()
@@ -340,29 +335,30 @@ def extract_entities(sampled_user_ids):
     return entity_ids, all_edges_df
 
 
-def save_results(entity_ids, all_edges, users_df):
+def save_results(output_dir, target_users, entity_ids, all_edges, users_df):
+    output_dir = os.path.abspath(output_dir)
     sampled_users = users_df[users_df['user_id'].isin(entity_ids['users'])]
     print("Saving")
     
-    users_file = os.path.join(OUTPUT_DIR, 'sampled_users.csv')
+    users_file = os.path.join(output_dir, 'sampled_users.csv')
     sampled_users.to_csv(users_file, index=False)
     
-    edges_file = os.path.join(OUTPUT_DIR, 'sampled_edges.csv')
+    edges_file = os.path.join(output_dir, 'sampled_edges.csv')
     all_edges.to_csv(edges_file, index=False)
     
-    tweets_file = os.path.join(OUTPUT_DIR, 'sampled_tweet_ids.csv')
+    tweets_file = os.path.join(output_dir, 'sampled_tweet_ids.csv')
     pd.DataFrame({'tweet_id': list(entity_ids['tweets'])}).to_csv(tweets_file, index=False)
     
-    lists_file = os.path.join(OUTPUT_DIR, 'sampled_list_ids.csv')
+    lists_file = os.path.join(output_dir, 'sampled_list_ids.csv')
     pd.DataFrame({'list_id': list(entity_ids['lists'])}).to_csv(lists_file, index=False)
     
-    hashtags_file = os.path.join(OUTPUT_DIR, 'sampled_hashtag_ids.csv')
+    hashtags_file = os.path.join(output_dir, 'sampled_hashtag_ids.csv')
     pd.DataFrame({'hashtag_id': list(entity_ids['hashtags'])}).to_csv(hashtags_file, index=False)
     
-    print(f"Saved to {os.path.abspath(OUTPUT_DIR)}")
+    print(f"Saved to {os.path.abspath(output_dir)}")
     
     summary = {
-        'target_users': TARGET_USERS,
+        'target_users': target_users,
         'actual_users': len(entity_ids['users']),
         'tweets': len(entity_ids['tweets']),
         'lists': len(entity_ids['lists']),
@@ -376,7 +372,7 @@ def save_results(entity_ids, all_edges, users_df):
         print(f"  {k}: {v}")
 
 
-def plot_distributions(original_df, sampled_df):
+def plot_distributions(output_dir, original_df, sampled_df):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
     orig_counts = original_df['label'].value_counts()
@@ -390,6 +386,7 @@ def plot_distributions(original_df, sampled_df):
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(['Human', 'Bot'])
     axes[0].set_ylabel('Count')
+    axes[0].set_yscale('log')
     axes[0].set_title('Class Distribution')
     axes[0].legend()
     
@@ -413,18 +410,18 @@ def plot_distributions(original_df, sampled_df):
     axes[2].legend()
     
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'distributions.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, 'distributions.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
 
-if __name__ == "__main__":
+def sample(input_dir, output_dir, target_users, seed_ratio=0.1, hub_ratio=0.7, bot_ratio=0.14):
     print("Starting sampling")
     
-    users_df = load_users()
-    users_df = calculate_degrees(users_df)
+    users_df = load_users(input_dir)
+    users_df = calculate_degrees(input_dir, users_df)
     
-    seeds, users_df = select_seeds(users_df)
-    sampled_user_ids = expand_sample(seeds, users_df)
+    seeds, users_df = select_seeds(users_df, target_users, seed_ratio, hub_ratio)
+    sampled_user_ids = expand_sample(seeds, users_df, target_users, bot_ratio)
     
     sampled_df = users_df[users_df['user_id'].isin(sampled_user_ids)]
     bot_ratio = (sampled_df['label'] == 'bot').mean()
@@ -432,8 +429,8 @@ if __name__ == "__main__":
     
     entity_ids, all_edges = extract_entities(sampled_user_ids)
 
-    plot_distributions(users_df, sampled_df)
+    plot_distributions(output_dir, users_df, sampled_df)
     
-    save_results(entity_ids, all_edges, users_df)
+    save_results(output_dir, target_users, entity_ids, all_edges, users_df)
     
     print("Done.")
