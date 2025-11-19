@@ -1,7 +1,5 @@
 """
-===============================================================================
 DuckDB Graph Loader Script
-===============================================================================
 
 This script expects a `.env` file in the project root containing:
 
@@ -29,7 +27,6 @@ The script will:
 - Create useful indexes for fast lookup
 
 Make sure you have a valid `.env` file before running this script.
-===============================================================================
 """
 
 from dotenv import load_dotenv
