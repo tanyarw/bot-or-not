@@ -7,7 +7,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.databuilder import Twibot22DataBuilder
 
 if __name__ == "__main__":
-    builder = Twibot22DataBuilder(db_path="db/twitter_graph.duckdb", out="./dataset/")
+    builder = Twibot22DataBuilder(
+        db_path="db/twitter_graph.duckdb",
+        out="./dataset/",
+        max_tweets_per_user=None,
+        build_like_count=True,
+    )
 
     logger.info("Loading tables...")
     builder.load_users()
@@ -21,3 +26,5 @@ if __name__ == "__main__":
     labels = builder.build_labels()
 
     logger.success(f"Labels shape: {tuple(node_emb.shape)}")
+
+    builder.con.close()
