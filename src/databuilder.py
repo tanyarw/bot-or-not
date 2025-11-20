@@ -11,9 +11,9 @@ from tqdm import tqdm
 import pandas as pd
 
 
-class Twibot22EmbeddingBuilder:
+class Twibot22DataBuilder:
     """
-    Node embedding builder for Twibot-22.
+    Node embedding and label builder for Twibot-22.
 
     Design:
     - One node = one user
@@ -209,7 +209,13 @@ class Twibot22EmbeddingBuilder:
         if self.users is None:
             raise RuntimeError("Call load_users() before building tweet embeddings.")
 
-        path = os.path.join(self.out, "user_tweet_embeddings.pt")
+        if self.max_tweets_per_user:
+            path = os.path.join(
+                self.out, f"user_{self.max_tweets_per_user}_tweets_embeddings.pt"
+            )
+        else:
+            path = os.path.join(self.out, "user_tweets_embeddings.pt")
+
         if os.path.exists(path):
             logger.info("Loading cached user tweet embeddings...")
             tweet_vectors = torch.load(path, map_location="cpu").to(self.device)
@@ -218,7 +224,8 @@ class Twibot22EmbeddingBuilder:
 
         logger.info("Aggregating tweets per user in DuckDB (limited per user)...")
 
-        query = f"""
+        query = (
+            f"""
             WITH limited_tweets AS (
                 SELECT
                     author_id,
@@ -240,6 +247,25 @@ class Twibot22EmbeddingBuilder:
             GROUP BY u.id
             ORDER BY u.id
         """
+            if self.max_tweets_per_user
+            else """
+            WITH limited_tweets AS (
+                SELECT
+                    author_id,
+                    text
+                FROM tweets
+                WHERE text IS NOT NULL
+            )
+            SELECT
+                u.id AS user_id,
+                string_agg(lt.text, ' ') AS agg_text
+            FROM users u
+            LEFT JOIN limited_tweets lt
+                ON ('u' || lt.author_id) = u.id
+            GROUP BY u.id
+            ORDER BY u.id
+        """
+        )
 
         tweet_df = self.con.execute(query).df()
 
@@ -413,3 +439,59 @@ class Twibot22EmbeddingBuilder:
         logger.success(f"Saved {out_path}")
 
         return x
+
+    def build_labels(self):
+        """
+        Build aligned label vector: (N,)
+
+        Label mapping: human (0), bot (1)
+        """
+
+        if self.users is None:
+            raise RuntimeError(
+                "Call load_users() before building description embeddings."
+            )
+
+        # Load bot_labels as dataframe
+        path = os.path.join(self.out, "labels.pt")
+        if os.path.exists(path):
+            logger.info("Loading cached labels.pt...")
+            labels_tensor = torch.load(path, map_location="cpu")
+            logger.success("Loaded labels.pt")
+            return labels_tensor
+
+        logger.info("Loading bot_labels table from DuckDB...")
+        self.labels = self.con.execute(
+            """
+            SELECT id, label
+            FROM bot_labels
+        """
+        ).df()
+        logger.success(f"Loaded {len(self.labels)} label rows from bot_labels")
+
+        # Build lookup dictionary: user_id -> label_string
+        label_dict = dict(zip(self.labels["id"], self.labels["label"]))
+
+        mapped = []
+
+        logger.info("Mapping labels to users in ORDER BY id ...")
+
+        for uid in self.users["id"]:
+            lbl = label_dict.get(uid, None)
+
+            if lbl == "bot":
+                mapped.append(1)
+
+            elif lbl == "human":
+                mapped.append(0)
+
+            else:
+                raise RuntimeError(f"Invalid label value received: {lbl}.")
+
+        labels_tensor = torch.tensor(mapped, dtype=torch.long)
+
+        torch.save(labels_tensor, os.path.join(self.out, "labels.pt"))
+
+        logger.success("Saved labels.pt")
+
+        return labels_tensor
