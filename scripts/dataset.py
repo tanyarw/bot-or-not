@@ -1,8 +1,15 @@
+from pathlib import Path
 import sys
 import os
-from loguru import logger
 
 import torch
+from loguru import logger
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_PATH = Path(os.getenv("DB_PATH")).expanduser().resolve()
+DATASET_ROOT = Path(os.getenv("DATASET_ROOT")).expanduser().resolve()
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -28,8 +35,8 @@ if __name__ == "__main__":
         version_name="v04",
         device=device,
         pipeline_device=pipeline_device,
-        db_path="db/twitter_graph.duckdb",
-        out="./dataset/",
+        db_path=DB_PATH,
+        out=DATASET_ROOT,
         max_tweets_per_user=None,
         build_like_count=True,
     )

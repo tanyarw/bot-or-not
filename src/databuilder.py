@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+from pathlib import Path
 from typing import Optional, List
 
 import duckdb
@@ -26,11 +27,11 @@ class Twibot22DataBuilder:
 
     def __init__(
         self,
-        version_name,
-        device,
-        pipeline_device,
-        db_path: str = "db/twitter_graph.duckdb",
-        out: str = "./dataset/",
+        version_name: str,
+        device: str,
+        pipeline_device: int,
+        db_path: Path,
+        out: Path,
         model_name: str = "roberta-base",
         embedding_dim: int = 128,
         max_tweets_per_user: int = 20,
@@ -172,7 +173,8 @@ class Twibot22DataBuilder:
                 "Call load_users() before building description embeddings."
             )
 
-        path = os.path.join(self.out, "user_desc_embeddings.pt")
+        path = self.out / "user_desc_embeddings.pt"
+
         if os.path.exists(path):
             logger.info("Loading cached user description embeddings...")
             desc_vectors = torch.load(path, map_location="cpu").to(self.device)
@@ -206,7 +208,7 @@ class Twibot22DataBuilder:
             if self.max_tweets_per_user
             else "user_all_tweets_embeddings.pt"
         )
-        path = os.path.join(self.out, filename)
+        path = self.out / filename
 
         if os.path.exists(path):
             logger.info("Loading cached user tweet embeddings...")
@@ -309,7 +311,7 @@ class Twibot22DataBuilder:
             if self.build_like_count
             else "user_numeric_features.pt"
         )
-        path = os.path.join(self.out, filename)
+        path = self.out / filename
 
         if os.path.exists(path):
             logger.info("Loading cached numeric properties...")
@@ -383,7 +385,7 @@ class Twibot22DataBuilder:
                 "Call load_users() before building categorical features."
             )
 
-        path = os.path.join(self.out, "user_cat_features.pt")
+        path = self.out / "user_cat_features.pt"
         if os.path.exists(path):
             logger.info("Loading cached categorical properties...")
             category_properties = torch.load(path, map_location="cpu").to(self.device)
@@ -431,7 +433,7 @@ class Twibot22DataBuilder:
             x: (num_users, embedding_dim) tensor on self.device
         """
         filename = f"user_node_embeddings_128_{self.version_name}.pt"
-        path = os.path.join(self.out, filename)
+        path = self.out / filename
         if os.path.exists(path):
             logger.info("Loading cached node embeddings...")
             category_properties = torch.load(path, map_location="cpu").to(self.device)
@@ -466,11 +468,8 @@ class Twibot22DataBuilder:
         x = torch.cat([d, t, n, c], dim=1)
         x = self.linear_relu_input(x)
 
-        out_path = os.path.join(
-            self.out, f"user_node_embeddings_128_{self.version_name}.pt"
-        )
-        torch.save(x.cpu(), out_path)
-        logger.success(f"Saved {out_path}")
+        torch.save(x.cpu(), path)
+        logger.success(f"Saved {path}")
 
         return x
 
@@ -481,7 +480,7 @@ class Twibot22DataBuilder:
         Label mapping: human (0), bot (1)
         """
 
-        path = os.path.join(self.out, "labels.pt")
+        path = self.out / "labels.pt"
         if os.path.exists(path):
             logger.info("Loading cached labels.pt...")
             labels_tensor = torch.load(path, map_location="cpu")
