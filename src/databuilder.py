@@ -26,9 +26,11 @@ class Twibot22DataBuilder:
 
     def __init__(
         self,
+        version_name,
+        device,
+        pipeline_device,
         db_path: str = "db/twitter_graph.duckdb",
         out: str = "./dataset/",
-        load_model: bool = True,
         model_name: str = "roberta-base",
         embedding_dim: int = 128,
         max_tweets_per_user: int = 20,
@@ -37,14 +39,19 @@ class Twibot22DataBuilder:
     ):
         self.out = out
         os.makedirs(out, exist_ok=True)
+        self.version_name = version_name
+        self.device = device
+        self.pipeline_device = pipeline_device
+        self.embedding_dim = embedding_dim
+        self.max_tweets_per_user = max_tweets_per_user
+        self.text_batch_size = text_batch_size
         self.build_like_count = build_like_count
 
         self.con = duckdb.connect(db_path)
 
         self.users: Optional[pd.DataFrame] = None
-        self.embedding_dim = embedding_dim
-        self.max_tweets_per_user = max_tweets_per_user
-        self.text_batch_size = text_batch_size
+        self.model_name = model_name
+        self.model = None
 
         # Projection layers
         self.linear_relu_desc: Optional[nn.Module] = None
@@ -52,33 +59,6 @@ class Twibot22DataBuilder:
         self.linear_relu_num_prop: Optional[nn.Module] = None
         self.linear_relu_cat_prop: Optional[nn.Module] = None
         self.linear_relu_input: Optional[nn.Module] = None
-
-        # Device selection
-        if torch.cuda.is_available():
-            self.device = "cuda"
-            pipeline_device = 0
-            logger.debug("Using CUDA GPU")
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-            pipeline_device = "mps"
-            logger.debug("Using Apple MPS backend")
-        else:
-            self.device = "cpu"
-            pipeline_device = -1
-            logger.debug("Using CPU")
-
-        # Load transformer model
-        if load_model:
-            logger.info(f"Loading tokenizer/model [{model_name}]...")
-            self.model = pipeline(
-                "feature-extraction",
-                model=model_name,
-                tokenizer=model_name,
-                device=pipeline_device,
-            )
-        else:
-            logger.info("Skipping model load (test mode).")
-            self.model = None
 
     def _init_projection_layers(
         self, desc_size: int, tweet_size: int, num_prop_size: int, cat_prop_size: int
@@ -115,11 +95,20 @@ class Twibot22DataBuilder:
 
         Returns: (N, hidden_dim) tensor on selected device
         """
-        if self.model is None:
-            logger.warning("Text embedding model is not initialized. Returning zeros.")
-            if len(texts) == 0:
-                return torch.zeros(0, 768, device=self.device)  # (0, 768)
+        if len(texts) == 0:
             return torch.zeros(len(texts), 768, device=self.device)  # (N, 768)
+
+        # Lazy init
+        if self.model is None:
+            logger.info(f"Loading tokenizer/model [{self.model_name}]...")
+            self.model = pipeline(
+                "feature-extraction",
+                model=self.model_name,
+                tokenizer=self.model_name,
+                device=self.pipeline_device,
+            )
+        else:
+            logger.info("Skipping model load (test mode).")
 
         all_embs = []  # list of (batch_size, 768)
         iterator = range(0, len(texts), self.text_batch_size)
@@ -441,8 +430,18 @@ class Twibot22DataBuilder:
         Returns:
             x: (num_users, embedding_dim) tensor on self.device
         """
+        filename = f"user_node_embeddings_128_{self.version_name}.pt"
+        path = os.path.join(self.out, filename)
+        if os.path.exists(path):
+            logger.info("Loading cached node embeddings...")
+            category_properties = torch.load(path, map_location="cpu").to(self.device)
+            logger.success(f"Loaded {filename}")
+            return category_properties
+
         if self.users is None:
-            self.load_users()
+            raise RuntimeError(
+                "Call load_users() before building categorical features."
+            )
 
         desc = self.build_user_desc_embeddings()  # (N, hidden_dim)
         tweet = self.build_user_tweet_embeddings()  # (N, hidden_dim)
@@ -467,7 +466,9 @@ class Twibot22DataBuilder:
         x = torch.cat([d, t, n, c], dim=1)
         x = self.linear_relu_input(x)
 
-        out_path = os.path.join(self.out, "user_node_embeddings_128.pt")
+        out_path = os.path.join(
+            self.out, f"user_node_embeddings_128_{self.version_name}.pt"
+        )
         torch.save(x.cpu(), out_path)
         logger.success(f"Saved {out_path}")
 
@@ -480,18 +481,17 @@ class Twibot22DataBuilder:
         Label mapping: human (0), bot (1)
         """
 
-        if self.users is None:
-            raise RuntimeError(
-                "Call load_users() before building description embeddings."
-            )
-
-        # Load bot_labels as dataframe
         path = os.path.join(self.out, "labels.pt")
         if os.path.exists(path):
             logger.info("Loading cached labels.pt...")
             labels_tensor = torch.load(path, map_location="cpu")
             logger.success("Loaded labels.pt")
             return labels_tensor
+
+        if self.users is None:
+            raise RuntimeError(
+                "Call load_users() before building description embeddings."
+            )
 
         logger.info("Loading bot_labels table from DuckDB...")
         self.labels = self.con.execute(
