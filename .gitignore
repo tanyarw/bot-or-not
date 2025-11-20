@@ -212,3 +212,6 @@ __marimo__/
 *.tmp
 *.metadata
 *.checkpoint
+
+# Pytorch files
+*.pt
