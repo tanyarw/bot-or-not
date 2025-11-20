@@ -28,7 +28,7 @@ def load_tweets_meta(filepath):
             tweet = orjson.loads(line)
             tweets.append({
                 'id': tweet['id'],
-                'author_id': tweet['author_id'],
+                'author_id': f"u{tweet['author_id']}",
                 'created_at': tweet['created_at']
             })
     
@@ -45,12 +45,13 @@ def create_snapshots(users_df: pd.DataFrame, tweets_meta_df: pd.DataFrame, edges
     edges_df = edges_df[edges_df['relation'].isin(['following', 'followers', 'post', 'like', 'retweeted', 'quoted', 'replied', 'mentioned', 'pinned'])].copy()
 
     # Calculate start times for edges
-    edges_df['active_from'] = edges_df.apply(
-    lambda row: max(
-        user_times.get(row['source_id']) or tweet_times.get(row['source_id']),
-        user_times.get(row['target_id']) or tweet_times.get(row['target_id'])
-    ), axis=1
-)
+    tqdm.pandas(desc="Calculating active edges")
+    edges_df['active_from'] = edges_df.progress_apply(
+        lambda row: max(
+            user_times.get(row['source_id']) or tweet_times.get(row['source_id']),
+            user_times.get(row['target_id']) or tweet_times.get(row['target_id'])
+        ), axis=1
+    )
 
     min_time = users_df['created_at'].min()
     max_time = max(users_df['created_at'].max(), tweets_meta_df['created_at'].max())
@@ -118,23 +119,6 @@ def save_graph(num_snapshots: int, users_df: pd.DataFrame, tweets_meta_df: pd.Da
         f.write(f'Total users: {len(users_df)}\n')
         f.write(f'Total tweets: {len(tweets_meta_df)}\n')
 
-
-def load_graph(graph_dir):
-    graph_dir = os.path.abspath(graph_dir)
-    
-    snapshots_path = os.path.join(graph_dir, 'snapshots.pkl')
-    with open(snapshots_path, 'rb') as f:
-        snapshots = pickle.load(f)
-    
-    user_features_path = os.path.join(graph_dir, 'user_features.pkl')
-    with open(user_features_path, 'rb') as f:
-        user_features = pickle.load(f)
-    
-    tweet_features_path = os.path.join(graph_dir, 'tweet_features.pkl')
-    with open(tweet_features_path, 'rb') as f:
-        tweet_features = pickle.load(f)
-    
-    return snapshots, user_features, tweet_features
 
 
 def static_to_temporal(input_dir, output_dir):
