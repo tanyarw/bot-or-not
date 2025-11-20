@@ -14,6 +14,13 @@ dependencies = [
     "matplotlib>=3.9.4",
     "numpy>=2.0.2",
     "pandas>=2.3.3",
+    "pytest>=8.4.2",
     "tqdm>=4.67.1",
     "transformers>=4.57.1",
 ]
+
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
