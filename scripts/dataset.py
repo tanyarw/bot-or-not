@@ -1,23 +1,53 @@
+from pathlib import Path
 import sys
 import os
+
+import torch
 from loguru import logger
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_PATH = Path(os.getenv("DB_PATH")).expanduser().resolve()
+DATASET_ROOT = Path(os.getenv("DATASET_ROOT")).expanduser().resolve()
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.databuilder import Twibot22DataBuilder
 
 if __name__ == "__main__":
-    builder = Twibot22DataBuilder(db_path="db/twitter_graph.duckdb", out="./dataset/")
 
-    logger.info("Loading tables...")
-    builder.load_users()
+    # Device selection
+    if torch.cuda.is_available():
+        device = "cuda"
+        pipeline_device = 0
+        logger.debug("Using CUDA GPU")
+    elif torch.backends.mps.is_available():
+        device = "mps"
+        pipeline_device = "mps"
+        logger.debug("Using Apple MPS backend")
+    else:
+        device = "cpu"
+        pipeline_device = -1
+        logger.debug("Using CPU")
 
-    logger.info("Building node embeddings...")
+    builder = Twibot22DataBuilder(
+        version_name="v04",
+        device=device,
+        pipeline_device=pipeline_device,
+        db_path=DB_PATH,
+        out=DATASET_ROOT,
+        max_tweets_per_user=None,
+        build_like_count=True,
+    )
+
+    # Run only if embeddings do not pre-exist
+    # builder.load_users()
+
     node_emb = builder.build_node_embeddings()
-
     logger.success(f"Node embeddings shape: {tuple(node_emb.shape)}")
 
-    logger.info("Building labels...")
     labels = builder.build_labels()
-
     logger.success(f"Labels shape: {tuple(node_emb.shape)}")
+
+    builder.con.close()

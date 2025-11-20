@@ -3,13 +3,15 @@ DuckDB Graph Loader Script
 
 This script expects a `.env` file in the project root containing:
 
-    DATA_ROOT=/absolute/path/to/your/data
+    DATA_ROOT=/absolute/or/relative/path/to/data
+    DB_PATH=/absolute/or/relative/path/to/db/twitter_graph.duckdb
 
-`DATA_ROOT` must point to the directory that contains the `static/` and `temporal/` folder, e.g.:
+Example:
 
     DATA_ROOT=~/OneDrive/data
+    DB_PATH=./db/twitter_graph.duckdb
 
-Directory structure should look like:
+Directory structure under DATA_ROOT must be:
 
     DATA_ROOT/
         static/
@@ -18,40 +20,42 @@ Directory structure should look like:
             sampled_edges.csv
             bot_labels.csv
         temporal/
+            (event-based JSONL/CSV files, optional)
 
-The script will:
-- Load DATA_ROOT from .env
-- Read all JSONL/CSV files from DATA_ROOT/static
-- Create a local DuckDB database at ./db/twitter_graph.duckdb
-- Create tables: users, tweets, edges, bot_labels
-- Create useful indexes for fast lookup
+What this script does:
+- Loads DATA_ROOT and DB_PATH from the `.env` file
+- Ensures the parent directory of DB_PATH exists
+- Reads JSONL/CSV files from DATA_ROOT/static
+- Creates (or overwrites) a DuckDB database at DB_PATH
+- Creates tables: users, tweets, edges, bot_labels
+- Adds useful indexes for efficient graph queries and joins
 
 Make sure you have a valid `.env` file before running this script.
 """
 
-from dotenv import load_dotenv
 from pathlib import Path
 import os
+
 import duckdb
+from loguru import logger
+
+from dotenv import load_dotenv
 
 load_dotenv()
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT")).expanduser().resolve()
-print("DATA_ROOT =", DATA_ROOT)
+logger.debug(f"DATA_ROOT = {DATA_ROOT}")
+
+DB_PATH = Path(os.getenv("DB_PATH")).expanduser().resolve()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+logger.debug(f"DB_PATH = {DB_PATH}")
 
 users_path = DATA_ROOT / "static" / "sampled_users.jsonl"
 tweets_path = DATA_ROOT / "static" / "sampled_tweets.jsonl"
 edges_path = DATA_ROOT / "static" / "sampled_edges.csv"
 labels_path = DATA_ROOT / "static" / "bot_labels.csv"
 
-os.makedirs("db", exist_ok=True)
-
-db_path = os.path.join(os.getcwd(), 'db', 'twitter_graph.duckdb')
-conn = duckdb.connect(db_path)
-
-print("Database will be stored at:", db_path)
-
-conn = duckdb.connect(db_path)
+conn = duckdb.connect(str(DB_PATH))
 
 # USERS
 conn.execute(
@@ -61,7 +65,7 @@ conn.execute(
 """
 )
 conn.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON users(id)")
-print("Users table created")
+logger.success("Users table created!")
 
 # TWEETS
 conn.execute(
@@ -71,7 +75,7 @@ conn.execute(
 """
 )
 conn.execute("CREATE INDEX IF NOT EXISTS idx_tweet_id ON tweets(id)")
-print("Tweets table created")
+logger.success("Tweets table created!")
 
 # EDGES
 conn.execute(
@@ -81,7 +85,7 @@ conn.execute(
 """
 )
 conn.execute("CREATE INDEX IF NOT EXISTS idx_edge_source ON edges(source_id)")
-print("Edges table created")
+logger.success("Edges table created!")
 
 # BOT LABELS
 conn.execute(
@@ -91,7 +95,7 @@ conn.execute(
 """
 )
 conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_node ON bot_labels(id)")
-print("Bot labels table created")
+logger.success("Bot labels table created!")
 
 conn.close()
-print("DB setup completed")
+logger.success("DB setup completed!")

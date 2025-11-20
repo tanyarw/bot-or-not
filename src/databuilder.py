@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+from pathlib import Path
 from typing import Optional, List
 
 import duckdb
@@ -9,7 +10,6 @@ import torch.nn as nn
 from transformers import pipeline
 from tqdm import tqdm
 import pandas as pd
-
 
 class Twibot22DataBuilder:
     """
@@ -27,23 +27,32 @@ class Twibot22DataBuilder:
 
     def __init__(
         self,
-        db_path: str = "db/twitter_graph.duckdb",
-        out: str = "./dataset/",
-        load_model: bool = True,
+        version_name: str,
+        device: str,
+        pipeline_device: int,
+        db_path: Path,
+        out: Path,
         model_name: str = "roberta-base",
         embedding_dim: int = 128,
         max_tweets_per_user: int = 20,
         text_batch_size: int = 32,
+        build_like_count: bool = False,
     ):
         self.out = out
         os.makedirs(out, exist_ok=True)
+        self.version_name = version_name
+        self.device = device
+        self.pipeline_device = pipeline_device
+        self.embedding_dim = embedding_dim
+        self.max_tweets_per_user = max_tweets_per_user
+        self.text_batch_size = text_batch_size
+        self.build_like_count = build_like_count
 
         self.con = duckdb.connect(db_path)
 
         self.users: Optional[pd.DataFrame] = None
-        self.embedding_dim = embedding_dim
-        self.max_tweets_per_user = max_tweets_per_user
-        self.text_batch_size = text_batch_size
+        self.model_name = model_name
+        self.model = None
 
         # Projection layers
         self.linear_relu_desc: Optional[nn.Module] = None
@@ -51,33 +60,6 @@ class Twibot22DataBuilder:
         self.linear_relu_num_prop: Optional[nn.Module] = None
         self.linear_relu_cat_prop: Optional[nn.Module] = None
         self.linear_relu_input: Optional[nn.Module] = None
-
-        # Device selection
-        if torch.cuda.is_available():
-            self.device = "cuda"
-            pipeline_device = 0
-            logger.debug("Using CUDA GPU")
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-            pipeline_device = "mps"
-            logger.debug("Using Apple MPS backend")
-        else:
-            self.device = "cpu"
-            pipeline_device = -1
-            logger.debug("Using CPU")
-
-        # Load transformer model
-        if load_model:
-            logger.info(f"Loading tokenizer/model [{model_name}]...")
-            self.model = pipeline(
-                "feature-extraction",
-                model=model_name,
-                tokenizer=model_name,
-                device=pipeline_device,
-            )
-        else:
-            logger.info("Skipping model load (test mode).")
-            self.model = None
 
     def _init_projection_layers(
         self, desc_size: int, tweet_size: int, num_prop_size: int, cat_prop_size: int
@@ -114,11 +96,20 @@ class Twibot22DataBuilder:
 
         Returns: (N, hidden_dim) tensor on selected device
         """
-        if self.model is None:
-            logger.warning("Text embedding model is not initialized. Returning zeros.")
-            if len(texts) == 0:
-                return torch.zeros(0, 768, device=self.device)  # (0, 768)
+        if len(texts) == 0:
             return torch.zeros(len(texts), 768, device=self.device)  # (N, 768)
+
+        # Lazy init
+        if self.model is None:
+            logger.info(f"Loading tokenizer/model [{self.model_name}]...")
+            self.model = pipeline(
+                "feature-extraction",
+                model=self.model_name,
+                tokenizer=self.model_name,
+                device=self.pipeline_device,
+            )
+        else:
+            logger.info("Skipping model load (test mode).")
 
         all_embs = []  # list of (batch_size, 768)
         iterator = range(0, len(texts), self.text_batch_size)
@@ -174,14 +165,16 @@ class Twibot22DataBuilder:
         """
         Build / load RoBERTa embeddings for user descriptions.
 
-        Returns shape: (num_users, hidden_dim)
+        Returns:
+        torch.Tensor of shape (num_users, hidden_dim)
         """
         if self.users is None:
             raise RuntimeError(
                 "Call load_users() before building description embeddings."
             )
 
-        path = os.path.join(self.out, "user_desc_embeddings.pt")
+        path = self.out / "user_desc_embeddings.pt"
+
         if os.path.exists(path):
             logger.info("Loading cached user description embeddings...")
             desc_vectors = torch.load(path, map_location="cpu").to(self.device)
@@ -204,68 +197,67 @@ class Twibot22DataBuilder:
         - concatenating them into a single string per user,
         - embedding that big single string with the text model.
 
-        Returns shape: (num_users, hidden_dim)
+        Returns:
+        torch.Tensor of shape (num_users, hidden_dim)
         """
         if self.users is None:
             raise RuntimeError("Call load_users() before building tweet embeddings.")
 
-        if self.max_tweets_per_user:
-            path = os.path.join(
-                self.out, f"user_{self.max_tweets_per_user}_tweets_embeddings.pt"
-            )
-        else:
-            path = os.path.join(self.out, "user_tweets_embeddings.pt")
+        filename = (
+            f"user_{self.max_tweets_per_user}_tweets_embeddings.pt"
+            if self.max_tweets_per_user
+            else "user_all_tweets_embeddings.pt"
+        )
+        path = self.out / filename
 
         if os.path.exists(path):
             logger.info("Loading cached user tweet embeddings...")
             tweet_vectors = torch.load(path, map_location="cpu").to(self.device)
-            logger.success("Loaded user_tweet_embeddings.pt")
+            logger.success(f"Loaded {filename}")
+
             return tweet_vectors
 
-        logger.info("Aggregating tweets per user in DuckDB (limited per user)...")
+        logger.info("Aggregating tweets per user in DuckDB...")
 
-        query = (
-            f"""
-            WITH limited_tweets AS (
+        if self.max_tweets_per_user:
+            query = f"""
+                WITH limited_tweets AS (
+                    SELECT
+                        author_id,
+                        text,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY author_id
+                            ORDER BY created_at DESC
+                        ) AS rn
+                    FROM tweets
+                    WHERE text IS NOT NULL
+                )
                 SELECT
-                    author_id,
-                    text,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY author_id
-                        ORDER BY created_at DESC
-                    ) AS rn
-                FROM tweets
-                WHERE text IS NOT NULL
-            )
-            SELECT
-                u.id AS user_id,
-                string_agg(lt.text, ' ') AS agg_text
-            FROM users u
-            LEFT JOIN limited_tweets lt
-                ON ('u' || lt.author_id) = u.id
-               AND lt.rn <= {self.max_tweets_per_user}
-            GROUP BY u.id
-            ORDER BY u.id
-        """
-            if self.max_tweets_per_user
-            else """
-            WITH limited_tweets AS (
+                    u.id AS user_id,
+                    string_agg(lt.text, ' ') AS agg_text
+                FROM users u
+                LEFT JOIN limited_tweets lt
+                    ON ('u' || lt.author_id) = u.id
+                  AND lt.rn <= {self.max_tweets_per_user}
+                GROUP BY u.id
+                ORDER BY u.id;
+            """
+        else:
+            query = """
+                WITH limited_tweets AS (
+                    SELECT author_id, text
+                    FROM tweets
+                    WHERE text IS NOT NULL
+                )
                 SELECT
-                    author_id,
-                    text
-                FROM tweets
-                WHERE text IS NOT NULL
-            )
-            SELECT
-                u.id AS user_id,
-                string_agg(lt.text, ' ') AS agg_text
-            FROM users u
-            LEFT JOIN limited_tweets lt
-                ON ('u' || lt.author_id) = u.id
-            GROUP BY u.id
-            ORDER BY u.id
-        """
-        )
+                    u.id AS user_id,
+                    string_agg(lt.text, ' ') AS agg_text
+                FROM users u
+                LEFT JOIN limited_tweets lt
+                    ON ('u' || lt.author_id) = u.id
+                GROUP BY u.id
+                ORDER BY u.id;
+            """
 
         tweet_df = self.con.execute(query).df()
 
@@ -286,24 +278,45 @@ class Twibot22DataBuilder:
         tweet_vectors = self._embed_text_batch(tweet_texts, show_progress=True)
 
         torch.save(tweet_vectors.cpu(), path)
-        logger.success("Saved user_tweet_embeddings.pt")
+        logger.success(f"Saved {filename}")
         return tweet_vectors
 
     def build_numeric_properties(self) -> torch.Tensor:
         """
-        Build numeric features (followers, following, tweet_count, active_days, screen_name_len).
-        Standardized per-feature.
+        Build standardized numeric user features.
 
-        Returns shape: (num_users, 5)
+        Base features (always included):
+            - followers_count
+            - following_count
+            - tweet_count
+            - active_days (account age in days relative to reference date)
+            - screen_name_len
+
+        Optional feature (enabled with self.build_like_count=True):
+            - unique_like_count (number of distinct tweets the user has liked)
+
+        All features are z-scored independently.
+
+        Returns:
+            torch.Tensor of shape:
+                (num_users, 5)  if self.build_like_count=False
+                (num_users, 6)  if self.build_like_count=True
         """
+
         if self.users is None:
             raise RuntimeError("Call load_users() before building numeric features.")
 
-        path = os.path.join(self.out, "user_numeric_features.pt")
+        filename = (
+            "user_numeric_features_with_like_count.pt"
+            if self.build_like_count
+            else "user_numeric_features.pt"
+        )
+        path = self.out / filename
+
         if os.path.exists(path):
             logger.info("Loading cached numeric properties...")
             numeric_properties = torch.load(path, map_location="cpu").to(self.device)
-            logger.success("Loaded user_numeric_features.pt")
+            logger.success(f"Loaded {filename}")
             return numeric_properties
 
         logger.info("Processing user numeric properties (vectorized)...")
@@ -327,41 +340,52 @@ class Twibot22DataBuilder:
             sigma = series.std() + 1e-8
             return (series - mu) / sigma
 
-        followers_z = _zscore(followers)
-        following_z = _zscore(following)
-        statuses_z = _zscore(statuses)
-        active_days_z = _zscore(active_days_raw)
-        screen_name_len_z = _zscore(screen_name_len_raw)
+        feature_list = [
+            _zscore(followers),
+            _zscore(following),
+            _zscore(statuses),
+            _zscore(active_days_raw),
+            _zscore(screen_name_len_raw),
+        ]
 
-        numeric_np = pd.concat(
-            [
-                followers_z,
-                following_z,
-                statuses_z,
-                active_days_z,
-                screen_name_len_z,
-            ],
-            axis=1,
-        ).to_numpy(dtype="float32")
+        if self.build_like_count:
+            likes_df = self.con.execute(
+                """
+              SELECT
+                  source_id AS id,
+                  COUNT(DISTINCT target_id) AS like_count
+              FROM edges
+              WHERE relation = 'like'
+              GROUP BY source_id
+          """
+            ).df()
 
+            users_with_likes = self.users.merge(likes_df, on="id", how="left")
+            like_count_raw = users_with_likes["like_count"].fillna(0).astype("float32")
+
+            feature_list.append(_zscore(like_count_raw))
+
+        numeric_np = pd.concat(feature_list, axis=1).to_numpy("float32")
         numeric_properties = torch.from_numpy(numeric_np).to(self.device)
 
         torch.save(numeric_properties.cpu(), path)
-        logger.success("Saved user_numeric_features.pt")
+        logger.success(f"Saved {filename}")
+
         return numeric_properties
 
     def build_categorical_properties(self) -> torch.Tensor:
         """
         Build categorical features (protected, verified, default_profile_image).
 
-        Returns shape: (num_users, 3)
+        Returns:
+        torch.Tensor of shape (num_users, 3)
         """
         if self.users is None:
             raise RuntimeError(
                 "Call load_users() before building categorical features."
             )
 
-        path = os.path.join(self.out, "user_cat_features.pt")
+        path = self.out / "user_cat_features.pt"
         if os.path.exists(path):
             logger.info("Loading cached categorical properties...")
             category_properties = torch.load(path, map_location="cpu").to(self.device)
@@ -408,8 +432,18 @@ class Twibot22DataBuilder:
         Returns:
             x: (num_users, embedding_dim) tensor on self.device
         """
+        filename = f"user_node_embeddings_128_{self.version_name}.pt"
+        path = self.out / filename
+        if os.path.exists(path):
+            logger.info("Loading cached node embeddings...")
+            category_properties = torch.load(path, map_location="cpu").to(self.device)
+            logger.success(f"Loaded {filename}")
+            return category_properties
+
         if self.users is None:
-            self.load_users()
+            raise RuntimeError(
+                "Call load_users() before building categorical features."
+            )
 
         desc = self.build_user_desc_embeddings()  # (N, hidden_dim)
         tweet = self.build_user_tweet_embeddings()  # (N, hidden_dim)
@@ -434,9 +468,8 @@ class Twibot22DataBuilder:
         x = torch.cat([d, t, n, c], dim=1)
         x = self.linear_relu_input(x)
 
-        out_path = os.path.join(self.out, "user_node_embeddings_128.pt")
-        torch.save(x.cpu(), out_path)
-        logger.success(f"Saved {out_path}")
+        torch.save(x.cpu(), path)
+        logger.success(f"Saved {path}")
 
         return x
 
@@ -447,18 +480,17 @@ class Twibot22DataBuilder:
         Label mapping: human (0), bot (1)
         """
 
-        if self.users is None:
-            raise RuntimeError(
-                "Call load_users() before building description embeddings."
-            )
-
-        # Load bot_labels as dataframe
-        path = os.path.join(self.out, "labels.pt")
+        path = self.out / "labels.pt"
         if os.path.exists(path):
             logger.info("Loading cached labels.pt...")
             labels_tensor = torch.load(path, map_location="cpu")
             logger.success("Loaded labels.pt")
             return labels_tensor
+
+        if self.users is None:
+            raise RuntimeError(
+                "Call load_users() before building description embeddings."
+            )
 
         logger.info("Loading bot_labels table from DuckDB...")
         self.labels = self.con.execute(
