@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import RGCNConv
 
-from model.base import BaseGCNModel
+from .base import BaseGCNModel
 
 
 class BotRGCN(BaseGCNModel):

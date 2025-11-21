@@ -1,7 +1,9 @@
 from .bot_rgcn import BotRGCN
+from .bot_ergcn import BotEvolvingRGCN
 
 MODEL_REGISTRY = {
     'bot_rgcn': BotRGCN,
+    'bot_ergcn': BotEvolvingRGCN,
 }
 
 def get_model(model_name, **kwargs):
