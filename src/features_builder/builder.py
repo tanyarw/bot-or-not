@@ -84,4 +84,6 @@ class Twibot22DataBuilder:
 
         label_tensor = self.labels.build(user_df, self.con, self.out_dir)
 
+        self.con.close()
+
         return fused_user_embeddings, label_tensor
