@@ -215,3 +215,7 @@ __marimo__/
 
 # Pytorch files
 *.pt
+
+# data files
+data/
+db/
