@@ -15,7 +15,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config import load_config
 from metadata import write_metadata
 from src.features_builder.builder import Twibot22DataBuilder
-from src.static_user_graph import StaticUserGraph
+from src.static_graph_builder import StaticUserGraph
 from src.utils.cache import save_tensor
 
 

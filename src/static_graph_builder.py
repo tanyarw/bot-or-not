@@ -15,7 +15,7 @@ class StaticUserGraph:
         - Only USER nodes
         - Node features = user embeddings
         - Node labels = human(0)/bot(1)
-        - Edges: 'following' and 'follower'
+        - Edges: 'following' and 'followers'
     """
 
     def __init__(
@@ -44,13 +44,15 @@ class StaticUserGraph:
         and filters out tweet nodes.
         """
 
-        logger.info("Loading user->user edges ('following', 'follower') from DuckDB...")
+        logger.info(
+            "Loading user->user edges ('following', 'followers') from DuckDB..."
+        )
 
         df = self.con.execute(
             """
             SELECT source_id, relation, target_id
             FROM edges
-            WHERE relation IN ('following', 'follower')
+            WHERE relation IN ('following', 'followers')
             """
         ).df()
 
@@ -66,7 +68,7 @@ class StaticUserGraph:
         dst_idx = []
         rel_types = []
 
-        relation_to_int = {"following": 0, "follower": 1}
+        relation_to_int = {"following": 0, "followers": 1}
 
         for s, r, d in zip(df["source_id"], df["relation"], df["target_id"]):
             if s in self.user_id_to_idx and d in self.user_id_to_idx:
