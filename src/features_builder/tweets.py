@@ -107,9 +107,16 @@ class TweetBuilder:
             user_tweet_embs : (num_users, hidden_dim=768)
         """
 
+        path = self.out_dir / "user_tweet_embeddings.pt"
+
+        if path.exists():
+            logger.info("Loading cached tweet embeddings → user_tweet_embeddings.pt...")
+            user_tweet_embs = load_tensor(path)
+
+            return user_tweet_embs
+
         emb_path = self.out_dir / "tweet_text_embeddings.pt"
         ids_path = self.out_dir / "tweet_ids.pt"
-
         if not emb_path.exists() or not ids_path.exists():
             raise RuntimeError(
                 "Tweet embeddings not found! Run embed_all_tweets() first."
@@ -117,7 +124,6 @@ class TweetBuilder:
 
         tweet_embs = load_tensor(emb_path)  # (M, 768)
         tweet_ids = load_tensor(ids_path, not_tensor=True)  # list of M strings
-
         id_to_idx = {tid: i for i, tid in enumerate(tweet_ids)}
 
         logger.info("Selecting top-K recent tweets per user...")
@@ -164,5 +170,8 @@ class TweetBuilder:
             pooled.append(agg_tweets)
 
         user_tweet_embs = torch.stack(pooled)  # (N, 768)
+
+        save_tensor(user_tweet_embs, path)
+        logger.success(f"Saved {path} with shape {user_tweet_embs.shape}")
 
         return user_tweet_embs
