@@ -31,12 +31,12 @@ class BotRGCN(BaseGCNModel):
         """
 
         # rgcn layer 1
-        x = self.rgcn1(x, edge_index, edge_type)
-        # x = F.leaky_relu(x)
+        x = self.rgcn(x, edge_index, edge_type)
+        x = F.leaky_relu(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # rgcn layer 2
-        x = self.rgcn2(x, edge_index, edge_type)
+        x = self.rgcn(x, edge_index, edge_type)
         x = F.leaky_relu(x)
 
         # MLP head
