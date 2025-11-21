@@ -55,7 +55,7 @@ class NodeEmbeddingBuilder:
         ).to(self.device)
 
     # final node embedding
-    def fuse(self, desc, tweet, numeric, categorical):
+    def fuse(self, desc, tweet, numeric, categorical, device):
         """
         Args:
             desc:         (N, D_desc)
@@ -76,7 +76,7 @@ class NodeEmbeddingBuilder:
 
         if out_path.exists():
             logger.info(f"Loading cached fused node embeddings → {fname}")
-            return load_tensor(out_path)
+            return load_tensor(out_path, device=device)
 
         if self.desc_proj is None:
             logger.info("Initializing node embedding projection layers...")

@@ -15,7 +15,13 @@ class LabelBuilder:
     def __init__(self):
         pass
 
-    def build(self, users_df: pd.DataFrame, con: DuckDBPyConnection, out_dir: Path):
+    def build(
+        self,
+        users_df: pd.DataFrame,
+        con: DuckDBPyConnection,
+        out_dir: Path,
+        device: str,
+    ):
         """
         Build or load label tensor aligned to users_df["id"] ordering.
 
@@ -32,7 +38,7 @@ class LabelBuilder:
 
         if path.exists():
             logger.info("Loading cached labels → labels.pt...")
-            labels_tensor = load_tensor(path)
+            labels_tensor = load_tensor(path, device=device)
             return labels_tensor
 
         logger.info("Loading bot_labels table from DuckDB...")

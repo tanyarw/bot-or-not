@@ -27,6 +27,7 @@ class Twibot22DataBuilder:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        self.device = cfg["device"]
 
         # DB connection
         self.con = connect(cfg["paths"]["db_path"])
@@ -47,7 +48,7 @@ class Twibot22DataBuilder:
         self.tweets = TweetBuilder(self.con, self.out_dir, self.embedder, cfg)
         self.numeric = NumericFeatureBuilder(self.con, self.out_dir, cfg)
         self.categorical = CategoricalFeatureBuilder(self.out_dir)
-        self.node_emb = NodeEmbeddingBuilder(cfg, self.out_dir, cfg["device"])
+        self.node_emb = NodeEmbeddingBuilder(cfg, self.out_dir, self.device)
         self.labels = LabelBuilder()
 
     def build_all(self):
@@ -64,25 +65,30 @@ class Twibot22DataBuilder:
             desc = self.embedder.embed_batch(desc_texts, show_progress=True)
             save_tensor(desc.cpu(), desc_path)
 
-        numeric = self.numeric.build(user_df)
-        categorical = self.categorical.build(user_df)
+        numeric = self.numeric.build(user_df, device=self.device)
+        categorical = self.categorical.build(user_df, device=self.device)
 
         tweet = None
 
         k = self.cfg["features"]["max_tweets_per_user"]
 
-        _tweet_ids, _tweet_embs = self.tweets.embed_k_user_tweets(k=k)
+        _tweet_ids, _tweet_embs = self.tweets.embed_k_user_tweets(
+            device=self.device, k=k
+        )
         if self.cfg["features"]["include_tweet_in_users"]:
-            tweet = self.tweets.embed_recent_tweets_per_user(user_df, k=k)
+            tweet = self.tweets.embed_recent_tweets_per_user(
+                user_df, device=self.device, k=k
+            )
 
         fused_user_embeddings = self.node_emb.fuse(
             desc=desc,
             tweet=tweet,
             numeric=numeric,
             categorical=categorical,
+            device=self.device,
         )
 
-        label_tensor = self.labels.build(user_df, self.con, self.out_dir)
+        label_tensor = self.labels.build(user_df, self.con, self.out_dir, self.device)
 
         self.con.close()
 

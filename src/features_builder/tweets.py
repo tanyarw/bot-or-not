@@ -23,7 +23,7 @@ class TweetBuilder:
         self.embedder = embedder
         self.cfg = cfg
 
-    def embed_k_user_tweets(self, k: int):
+    def embed_k_user_tweets(self, device: str, k: int):
         """
         Embed ONLY the k most recent tweets per user.
         Produces:
@@ -38,7 +38,7 @@ class TweetBuilder:
         if out_ids.exists() and out_embs.exists():
             logger.info("Loading cached tweet embeddings → tweet_text_embeddings.pt...")
             tweet_ids = load_tensor(out_ids, not_tensor=True)
-            tweet_embs = load_tensor(out_embs)
+            tweet_embs = load_tensor(out_embs, device=device)
 
             return tweet_ids, tweet_embs
 
@@ -101,7 +101,9 @@ class TweetBuilder:
 
         return tweet_ids_list, tweet_embs
 
-    def embed_recent_tweets_per_user(self, user_df: pd.DataFrame, k: int = 20):
+    def embed_recent_tweets_per_user(
+        self, user_df: pd.DataFrame, device: str, k: int = 20
+    ):
         """
         Returns:
             user_tweet_embs : (num_users, hidden_dim=768)
@@ -111,7 +113,7 @@ class TweetBuilder:
 
         if path.exists():
             logger.info("Loading cached tweet embeddings → user_tweet_embeddings.pt...")
-            user_tweet_embs = load_tensor(path)
+            user_tweet_embs = load_tensor(path, device=device)
 
             return user_tweet_embs
 
@@ -122,7 +124,7 @@ class TweetBuilder:
                 "Tweet embeddings not found! Run embed_all_tweets() first."
             )
 
-        tweet_embs = load_tensor(emb_path)  # (M, 768)
+        tweet_embs = load_tensor(emb_path, device=device)  # (M, 768)
         tweet_ids = load_tensor(ids_path, not_tensor=True)  # list of M strings
         id_to_idx = {tid: i for i, tid in enumerate(tweet_ids)}
 
@@ -153,15 +155,16 @@ class TweetBuilder:
 
         # pool embeddings per user
         pooled = []
+
         for tids in tids_grouped_by_user.tolist():
             if len(tids) == 0:
-                pooled.append(torch.zeros(768, device="mps"))
+                pooled.append(torch.zeros(768, device=device))
                 continue
 
             idxs = [id_to_idx.get(t) for t in tids if t in id_to_idx]
             if len(idxs) == 0:
                 logger.warning("Funny! No tweets found for a user.")
-                pooled.append(torch.zeros(768, device="mps"))
+                pooled.append(torch.zeros(768, device=device))
                 continue
 
             mat = tweet_embs[idxs]  # (k, 768)

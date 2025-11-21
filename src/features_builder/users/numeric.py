@@ -39,7 +39,7 @@ class NumericFeatureBuilder:
         sigma = series.std() + 1e-8
         return (series - mu) / sigma
 
-    def build(self, users_df: pd.DataFrame):
+    def build(self, users_df: pd.DataFrame, device: str):
         """
         Args:
             users_df: DataFrame already ordered by id.
@@ -61,7 +61,7 @@ class NumericFeatureBuilder:
 
         if out_path.exists():
             logger.info(f"Loading cached numeric features → {fname}")
-            return load_tensor(out_path)
+            return load_tensor(out_path, device=device)
 
         logger.info("Processing numeric user features...")
 
