@@ -1,0 +1,26 @@
+version_name: "v2.0.0"
+
+paths:
+  db_path: ${DB_PATH}
+  out_dir: ${DATASET_ROOT}
+
+text:
+  model_name: "roberta-base"
+  batch_size: 32
+  pipeline_device: 1
+
+tweet_processing:
+  chunk_size: 10000
+
+features:
+  include_tweet_in_users: true
+  max_tweets_per_user: 20
+
+embedding:
+  user_embedding_dim: 128
+  projection_activation: "leaky_relu"
+
+logging:
+  level: "INFO"
+
+device: mps
