@@ -24,3 +24,13 @@ logging:
   level: "INFO"
 
 device: mps
+
+botrgcn:
+  split:
+    train: 0.6
+    val: 0.2
+    test: 0.2
+  out_dir:
+    ${BOTRGCN_ROOT}
+
+

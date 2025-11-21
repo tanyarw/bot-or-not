@@ -8,9 +8,9 @@ from .base import BaseGCNModel
 class BotRGCN(BaseGCNModel):
     def __init__(
         self,
-        in_channels=128,  # node_embeddings_128.pt
+        in_channels=128,  # node embeddings dim
         hidden_channels=128,
-        num_relations=2,  # (0) follower, (1) following
+        num_relations=2,  # (0) followers, (1) following
         dropout=0.3,
     ):
 
