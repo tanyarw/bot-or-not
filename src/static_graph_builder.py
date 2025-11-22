@@ -1,9 +1,7 @@
 from pathlib import Path
-
-
 from loguru import logger
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import HeteroData
 
 from src.utils.cache import load_tensor
 from src.utils.duck import connect
@@ -11,11 +9,11 @@ from src.utils.duck import connect
 
 class StaticUserGraph:
     """
-    Build a PyG graph with:
-        - Only USER nodes
+    Build a PyG HeteroData graph with:
+        - Node type: 'user'
         - Node features = user embeddings
         - Node labels = human(0)/bot(1)
-        - Edges: 'following' and 'followers'
+        - Edge types: ('user', 'following', 'user') and ('user', 'followers', 'user')
     """
 
     def __init__(
@@ -28,8 +26,8 @@ class StaticUserGraph:
         self.con = connect(db_path)
 
         self.user_ids = load_tensor(user_ids_path, not_tensor=True)
-        self.x = load_tensor(node_embeddings_path)
-        self.y = load_tensor(labels_path)
+        self.x = load_tensor(node_embeddings_path)  # (N, F)
+        self.y = load_tensor(labels_path)  # (N,)
 
         logger.info(f"Loaded {len(self.user_ids)} users")
         logger.info(f"x: {tuple(self.x.shape)}, y: {tuple(self.y.shape)}")
@@ -38,15 +36,12 @@ class StaticUserGraph:
 
     def _load_edges(self):
         """
-        Loads two directed relations for user→user graph:
+        Loads directed user→user edges for:
             - following
-            - follower
-        and filters out tweet nodes.
+            - followers
         """
 
-        logger.info(
-            "Loading user->user edges ('following', 'followers') from DuckDB..."
-        )
+        logger.info("Loading user->user edges from DuckDB...")
 
         df = self.con.execute(
             """
@@ -58,55 +53,75 @@ class StaticUserGraph:
 
         logger.debug(f"Raw edges loaded: {len(df):,}")
 
-        # Keep only user-to-user edges
+        # only user nodes
         df = df[
             df["source_id"].str.startswith("u") & df["target_id"].str.startswith("u")
         ]
         logger.debug(f"user->user edges kept: {len(df):,}")
 
-        src_idx = []
-        dst_idx = []
-        rel_types = []
-
-        relation_to_int = {"following": 0, "followers": 1}
+        # separate lists for each relation
+        following_src, following_dst = [], []
+        followers_src, followers_dst = [], []
 
         for s, r, d in zip(df["source_id"], df["relation"], df["target_id"]):
             if s in self.user_id_to_idx and d in self.user_id_to_idx:
-                src_idx.append(self.user_id_to_idx[s])
-                dst_idx.append(self.user_id_to_idx[d])
-                rel_types.append(relation_to_int[r])
+                s_idx = self.user_id_to_idx[s]
+                d_idx = self.user_id_to_idx[d]
 
-        logger.success(f"Final edge count (user->user): {len(src_idx):,}")
+                if r == "following":
+                    following_src.append(s_idx)
+                    following_dst.append(d_idx)
+                elif r == "followers":
+                    followers_src.append(s_idx)
+                    followers_dst.append(d_idx)
 
-        edge_index = torch.tensor([src_idx, dst_idx], dtype=torch.long)
-        edge_type = torch.tensor(rel_types, dtype=torch.long)
+        logger.success(f"Following edges: {len(following_src):,}")
+        logger.success(f"Followers edges: {len(followers_src):,}")
 
-        return edge_index, edge_type
+        return (
+            torch.tensor(following_src),
+            torch.tensor(following_dst),
+            torch.tensor(followers_src),
+            torch.tensor(followers_dst),
+        )
 
     def build_pyg_graph(self):
         """
-        Returns a PyTorch Geometric Data object:
-            data.x:     (N, F)
-            data.y:     (N,)
-            data.edge_index: (2, E)
-            data.edge_type:  (E,)  # for RGCN or HGT
+        Returns a PyTorch Geometric HeteroData object.
         """
 
-        edge_index, edge_type = self._load_edges()
+        (
+            fol_src,
+            fol_dst,
+            fw_src,
+            fw_dst,
+        ) = self._load_edges()
 
-        logger.info("Building PyG graph object...")
+        logger.info("Building PyG HeteroData graph ...")
 
-        data = Data(
-            x=self.x,
-            y=self.y,
-            edge_index=edge_index,
-            edge_type=edge_type,
-            num_nodes=self.x.size(0),
+        data = HeteroData()
+
+        data["user"].x = self.x  # (N, embedding_dim)
+        data["user"].y = self.y  # (N,)
+        data["user"].num_nodes = self.x.size(0)
+
+        # user -> following -> user
+        data[("user", "following", "user")].edge_index = torch.stack(
+            [fol_src, fol_dst], dim=0
         )
 
-        logger.success("Graph built!")
-        logger.success(f" Nodes: {data.num_nodes}")
-        logger.success(f" Edges: {data.edge_index.size(1)}")
-        logger.success(f" Node features: {tuple(data.x.shape)}")
+        # user -> followers -> user
+        data[("user", "followers", "user")].edge_index = torch.stack(
+            [fw_src, fw_dst], dim=0
+        )
+
+        logger.success("Hetero graph built!")
+        logger.success(f" User nodes: {data['user'].num_nodes}")
+        logger.success(
+            f" Following edges: {data['user','following','user'].edge_index.size(1)}"
+        )
+        logger.success(
+            f" Followers edges: {data['user','followers','user'].edge_index.size(1)}"
+        )
 
         return data

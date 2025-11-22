@@ -45,13 +45,18 @@ def main():
 
     data = graph_builder.build_pyg_graph()
 
-    path = DATASET_ROOT / "static_user_graph.pt"
+    path = DATASET_ROOT / "static_user_hetero_graph.pt"
     save_tensor(data, path)
 
     logger.success(f"Saved PyG graph → {path}")
-    logger.success(f" Nodes: {data.num_nodes}")
-    logger.success(f" Edges: {data.edge_index.size(1)}")
-    logger.success(f" Features: {data.x.shape}")
+    logger.success(f" User nodes: {data['user'].num_nodes}")
+
+    for edge_type in data.edge_types:
+        ei = data[edge_type].edge_index
+        logger.success(f" Edges[{edge_type}]: {ei.size(1)}")
+
+    logger.success(f" User features: {tuple(data['user'].x.shape)}")
+    logger.success(f" User labels: {tuple(data['user'].y.shape)}")
 
 
 if __name__ == "__main__":
