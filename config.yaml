@@ -27,9 +27,8 @@ device: mps
 
 botrgcn:
   split:
-    train: 0.6
-    val: 0.2
-    test: 0.2
+    train: 0.8
+    val: 0.1
   out_dir:
     ${BOTRGCN_ROOT}
 
