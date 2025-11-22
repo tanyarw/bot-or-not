@@ -20,7 +20,7 @@ class CategoricalFeatureBuilder:
     def __init__(self, out_dir: Path):
         self.out_dir = out_dir
 
-    def build(self, users_df: pd.DataFrame):
+    def build(self, users_df: pd.DataFrame, device: str):
         """
         Args:
             users_df: DataFrame ordered by id
@@ -32,7 +32,7 @@ class CategoricalFeatureBuilder:
 
         if out_path.exists():
             logger.info("Loading cached categorical features → categorical_features.pt")
-            return load_tensor(out_path)
+            return load_tensor(out_path, device=device)
 
         logger.info("Building categorical user features...")
 

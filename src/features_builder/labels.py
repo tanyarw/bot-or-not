@@ -4,7 +4,7 @@ from duckdb import DuckDBPyConnection
 import pandas as pd
 import torch
 from loguru import logger
-
+from src.utils.cache import save_tensor, load_tensor
 
 class LabelBuilder:
     """
@@ -15,7 +15,13 @@ class LabelBuilder:
     def __init__(self):
         pass
 
-    def build(self, users_df: pd.DataFrame, con: DuckDBPyConnection, out_dir: Path):
+    def build(
+        self,
+        users_df: pd.DataFrame,
+        con: DuckDBPyConnection,
+        out_dir: Path,
+        device: str,
+    ):
         """
         Build or load label tensor aligned to users_df["id"] ordering.
 
@@ -32,7 +38,7 @@ class LabelBuilder:
 
         if path.exists():
             logger.info("Loading cached labels → labels.pt...")
-            labels_tensor = torch.load(path, map_location="cpu")
+            labels_tensor = load_tensor(path, device=device)
             return labels_tensor
 
         logger.info("Loading bot_labels table from DuckDB...")
@@ -61,7 +67,7 @@ class LabelBuilder:
 
         labels_tensor = torch.tensor(mapped_labels, dtype=torch.long)
 
-        torch.save(labels_tensor, path)
+        save_tensor(labels_tensor, path)
         logger.success("Saved labels.pt")
 
         return labels_tensor

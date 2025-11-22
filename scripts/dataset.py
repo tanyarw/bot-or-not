@@ -15,6 +15,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config import load_config
 from metadata import write_metadata
 from src.features_builder.builder import Twibot22DataBuilder
+from src.static_graph_builder import StaticUserGraph
+from src.utils.cache import save_tensor
 
 
 def main():
@@ -31,6 +33,30 @@ def main():
     logger.success("Finished building TwiBot22 dataset.")
     logger.success(f"   - Node embeddings shape:{fused.shape}")
     logger.success(f"   - Labels shape:{labels.shape}")
+
+    logger.info("Building Static User Graph")
+
+    graph_builder = StaticUserGraph(
+        db_path=DB_PATH,
+        user_ids_path=DATASET_ROOT / "user_ids.pt",
+        node_embeddings_path=DATASET_ROOT / "user_node_embeddings_128_v2.0.0.pt",
+        labels_path=DATASET_ROOT / "labels.pt",
+    )
+
+    data = graph_builder.build_pyg_graph()
+
+    path = DATASET_ROOT / "static_user_hetero_graph.pt"
+    save_tensor(data, path)
+
+    logger.success(f"Saved PyG graph → {path}")
+    logger.success(f" User nodes: {data['user'].num_nodes}")
+
+    for edge_type in data.edge_types:
+        ei = data[edge_type].edge_index
+        logger.success(f" Edges[{edge_type}]: {ei.size(1)}")
+
+    logger.success(f" User features: {tuple(data['user'].x.shape)}")
+    logger.success(f" User labels: {tuple(data['user'].y.shape)}")
 
 
 if __name__ == "__main__":
