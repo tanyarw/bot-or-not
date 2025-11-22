@@ -5,19 +5,21 @@ from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
 from sklearn.metrics import accuracy_score, f1_score
+import csv
 
 import torch
 from torch_geometric.data import HeteroData
+from torch.utils.tensorboard import SummaryWriter
 
 load_dotenv()
 DATASET_ROOT = Path(os.getenv("DATASET_ROOT")).expanduser().resolve()
+LOG_ROOT = Path(os.getenv("LOG_ROOT")).expanduser().resolve()
 BOTRGCN_ROOT = Path(os.getenv("BOTRGCN_ROOT")).expanduser().resolve()
 TEST_NODES_PATH = Path(os.getenv("TEST_NODES_PATH")).expanduser().resolve()
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from model import BotRGCN
 from config import load_config
-
 
 # train step
 def train_step(
@@ -62,10 +64,31 @@ if __name__ == "__main__":
     cfg = load_config("config.yaml")
     cfg["paths"]["out_dir"] = str(DATASET_ROOT)
     cfg["botrgcn"]["out_dir"] = str(BOTRGCN_ROOT)
+    cfg["botrgcn"]["log_dir"] = str(LOG_ROOT)
 
     input_dir = Path(cfg["paths"]["out_dir"])
     out_dir = Path(cfg["botrgcn"]["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(cfg["botrgcn"]["log_dir"])
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_path = log_dir / "metrics.csv"
+    with open(metrics_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "epoch",
+                "train_acc",
+                "train_f1_macro",
+                "val_acc",
+                "val_f1_macro",
+                "val_f1_minority",
+                "weighted_f1",
+                "test_acc",
+                "test_f1",
+            ]
+        )
+    writer_tb = SummaryWriter(log_dir=str(log_dir / "tensorboard"))
 
     data_path = input_dir / "static_user_hetero_graph.pt"
     logger.info(f"Loading graph from {data_path}")
@@ -190,13 +213,11 @@ if __name__ == "__main__":
             loss_fn,
         )
 
+        train_acc, train_f1, _, _ = eval_step(
+            model, x, edge_index, edge_type, y, val_mask
+        )
         val_acc, val_f1, val_preds, _ = eval_step(
-            model,
-            x,
-            edge_index,
-            edge_type,
-            y,
-            val_mask,
+            model, x, edge_index, edge_type, y, val_mask
         )
 
         val_f1_minority = f1_score(
@@ -211,10 +232,34 @@ if __name__ == "__main__":
 
         logger.info(
             f"Epoch {epoch:03d} | Loss={loss:.4f} | "
-            f"MacroF1={val_f1_macro:.4f} | "
-            f"MinorityF1={val_f1_minority:.4f} | "
-            f"Score={combined_score:.4f}"
+            f"TrainAcc={train_acc:.4f} | TrainMacroF1={train_f1:.4f} | "
+            f"ValAcc={val_acc:.4f} | ValMacroF1={val_f1_macro:.4f} | "
+            f"ValMinorityF1={val_f1_minority:.4f} | WeightedF1={combined_score:.4f}"
         )
+
+        with open(metrics_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    epoch,
+                    float(train_acc),
+                    float(train_f1),
+                    float(val_acc),
+                    float(val_f1_macro),
+                    float(val_f1_minority),
+                    float(combined_score),
+                    "",
+                    "",
+                ]
+            )
+
+        writer_tb.add_scalar("Loss/train", loss, epoch)
+        writer_tb.add_scalar("Accuracy/train", train_acc, epoch)
+        writer_tb.add_scalar("F1/train_macro", train_f1, epoch)
+        writer_tb.add_scalar("Accuracy/val", val_acc, epoch)
+        writer_tb.add_scalar("F1/val_macro", val_f1_macro, epoch)
+        writer_tb.add_scalar("F1/val_minority", val_f1_minority, epoch)
+        writer_tb.add_scalar("Score/weighted_f1", combined_score, epoch)
 
         if combined_score > best_score + min_delta:
             best_score = combined_score
@@ -222,7 +267,7 @@ if __name__ == "__main__":
             patience_counter = 0
             torch.save(model.state_dict(), best_model_path)
             logger.success(
-                f"New best model at epoch {epoch} — Score={combined_score:.4f}"
+                f"New best model at epoch {epoch} — WeightedF1Score={combined_score:.4f}"
             )
         else:
             patience_counter += 1

@@ -32,11 +32,11 @@ class BotRGCN(BaseGCNModel):
             num_relations=num_relations,
         )
 
-        self.rgcn2 = RGCNConv(
-            hidden_channels,
-            hidden_channels,
-            num_relations=num_relations,
-        )
+        # self.rgcn2 = RGCNConv(
+        #     hidden_channels,
+        #     hidden_channels,
+        #     num_relations=num_relations,
+        # )
 
         # MLP head
         self.linear_relu = nn.Sequential(
@@ -58,7 +58,7 @@ class BotRGCN(BaseGCNModel):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # R-GCN layer 2
-        x = self.rgcn2(x, edge_index, edge_type)
+        x = self.rgcn1(x, edge_index, edge_type)
         x = F.leaky_relu(x)
 
         # MLP head
