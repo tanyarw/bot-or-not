@@ -7,21 +7,19 @@ from loguru import logger
 from sklearn.metrics import accuracy_score, f1_score
 
 import torch
-from torch_geometric.data import Data, HeteroData
-from torch_geometric.transforms import RandomNodeSplit
+from torch_geometric.data import HeteroData
 
 load_dotenv()
 DATASET_ROOT = Path(os.getenv("DATASET_ROOT")).expanduser().resolve()
 BOTRGCN_ROOT = Path(os.getenv("BOTRGCN_ROOT")).expanduser().resolve()
+TEST_NODES_PATH = Path(os.getenv("TEST_NODES_PATH")).expanduser().resolve()
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from model import BotRGCN
 from config import load_config
 
 
-# -----------------------
-# Helper: one train step
-# -----------------------
+# train step
 def train_step(
     model,
     x,
@@ -44,9 +42,7 @@ def train_step(
     return loss.item()
 
 
-# -----------------------
-# Helper: one eval step
-# -----------------------
+# eval step
 def eval_step(model, x, edge_index, edge_type, y, mask):
     model.eval()
     with torch.no_grad():
@@ -79,48 +75,63 @@ if __name__ == "__main__":
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
-
     if isinstance(raw_data, HeteroData):
         logger.info("Detected HeteroData. Converting to homogeneous tensors...")
 
         hetero_data: HeteroData = raw_data.to(device)
 
-        # assume only 'user' nodes are present / relevant
+        # test user IDs
+        test_user_ids = torch.load(TEST_NODES_PATH)
+
         num_nodes = hetero_data["user"].num_nodes
 
-        val_ratio = cfg["botrgcn"]["split"]["val"]
-        test_ratio = cfg["botrgcn"]["split"]["test"]
-        num_val = int(val_ratio * num_nodes)
-        num_test = int(test_ratio * num_nodes)
-
-        splitter = RandomNodeSplit(
-            split="train_rest",
-            num_val=num_val,
-            num_test=num_test,
-            # key="user",
+        all_user_ids = hetero_data["user"].id
+        print(len(all_user_ids))
+        id_to_index = {uid: idx for idx, uid in enumerate(all_user_ids)}
+        test_node_indices = torch.tensor(
+            [id_to_index[uid] for uid in test_user_ids], dtype=torch.long, device=device
         )
-        hetero_data = splitter(hetero_data)
+
+        num_nodes = hetero_data["user"].num_nodes
+        test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        test_mask[test_node_indices] = True
+
+        remaining_mask = ~test_mask
+        remaining_indices = remaining_mask.nonzero(as_tuple=True)[0]
+
+        perm = torch.randperm(remaining_indices.size(0), device=device)
+        remaining_indices = remaining_indices[perm]
+
+        num_remaining = remaining_indices.size(0)
+        val_ratio = cfg["botrgcn"]["split"]["val"]
+        num_val = int(val_ratio * num_remaining)
+
+        val_ids = remaining_indices[:num_val]
+        train_ids = remaining_indices[num_val:]
+
+        train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+
+        train_mask[train_ids] = True
+        val_mask[val_ids] = True
+
+        hetero_data["user"].train_mask = train_mask
+        hetero_data["user"].val_mask = val_mask
+        hetero_data["user"].test_mask = test_mask
 
         logger.info(
-            f"Mask sizes (user) — "
-            f"Train={hetero_data['user'].train_mask.sum()} "
-            f"Val={hetero_data['user'].val_mask.sum()} "
-            f"Test={hetero_data['user'].test_mask.sum()}"
+            f"Mask sizes — Train={train_mask.sum()}  Val={val_mask.sum()}  Test={test_mask.sum()}"
         )
 
-        # Node features & labels
-        x = hetero_data["user"].x  # (N, F)
+        x = hetero_data["user"].x  # (N, embedding_dim)
         y = hetero_data["user"].y  # (N,)
 
         train_mask = hetero_data["user"].train_mask
         val_mask = hetero_data["user"].val_mask
         test_mask = hetero_data["user"].test_mask
 
-        # ('user', 'followers', 'user') → relation id 0
-        # ('user', 'following', 'user') → relation id 1
         edge_index_followers = hetero_data[("user", "followers", "user")].edge_index
         edge_index_following = hetero_data[("user", "following", "user")].edge_index
-
         edge_index = torch.cat(
             [edge_index_followers, edge_index_following],
             dim=1,
@@ -137,62 +148,17 @@ if __name__ == "__main__":
             dim=0,
         )
 
-    elif isinstance(raw_data, Data):
-        logger.info("Detected homogeneous Data. Using directly.")
-
-        data: Data = raw_data.to(device)
-
-        num_nodes = data.num_nodes
-        val_ratio = cfg["botrgcn"]["split"]["val"]
-        test_ratio = cfg["botrgcn"]["split"]["test"]
-        num_val = int(val_ratio * num_nodes)
-        num_test = int(test_ratio * num_nodes)
-
-        splitter = RandomNodeSplit(
-            split="train_rest",
-            num_val=num_val,
-            num_test=num_test,
-        )
-        data = splitter(data)
-
-        logger.info(
-            f"Mask sizes — "
-            f"Train={data.train_mask.sum()} "
-            f"Val={data.val_mask.sum()} "
-            f"Test={data.test_mask.sum()}"
-        )
-
-        x = data.x
-        y = data.y
-        train_mask = data.train_mask
-        val_mask = data.val_mask
-        test_mask = data.test_mask
-
-        edge_index = data.edge_index
-        if hasattr(data, "edge_type"):
-            edge_type = data.edge_type
-        else:
-            raise ValueError("Homogeneous Data object is missing `edge_type`.")
-
-        x = x.to(device)
-        y = y.to(device)
-        train_mask = train_mask.to(device)
-        val_mask = val_mask.to(device)
-        test_mask = test_mask.to(device)
-        edge_index = edge_index.to(device)
-        edge_type = edge_type.to(device)
-
     else:
         raise TypeError(f"Unsupported data type: {type(raw_data)}")
 
     model = BotRGCN(
         in_channels=x.shape[1],
         hidden_channels=128,
-        num_relations=2,  # 0: followers, 1: following
-        dropout=0.30,
+        num_relations=2,
+        dropout=0.2,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5 * 1e-3, weight_decay=1e-4)
     best_model_path = out_dir / "bot_rgcn.pt"
 
     # class weights
@@ -209,7 +175,7 @@ if __name__ == "__main__":
     best_epoch = 0
     patience = 10
     min_delta = 1e-4
-    patience_counter = 0
+    patience_counter = 10
 
     for epoch in range(1, 301):
 

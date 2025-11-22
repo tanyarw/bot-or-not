@@ -104,6 +104,7 @@ class StaticUserGraph:
         data["user"].x = self.x  # (N, embedding_dim)
         data["user"].y = self.y  # (N,)
         data["user"].num_nodes = self.x.size(0)
+        data["user"].id = self.user_ids
 
         # user -> following -> user
         data[("user", "following", "user")].edge_index = torch.stack(
