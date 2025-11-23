@@ -93,8 +93,8 @@ bot-or-not/
 │       ├── node_embeddings_128.pt
 │       └── labels.pt
 │
+├── data_analysis/
 ├── model/
-├── notebooks/
 ├── src/
 ├── scripts/
 │
