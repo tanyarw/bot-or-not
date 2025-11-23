@@ -52,23 +52,28 @@ python scripts/sampling.py
 python scripts/db_setup.py
 ```
 
+### 5. Perform analysis on the Graphs
+Eexecute the notebooks
+* `data_analysis/sampling_eda.ipynb`
+* `data_analysis/twibot22_sampled_eda.ipynb`
+
 ### 5. Build the Discrete-Time Dynamic Graph "Snapshots" (DTDG)
 ```bash
 python scripts/processing.py
 ```
 
-### 5. Build the Node Embeddings and the Pytorch Geometric Dataset for the static graph
+### 6. Build the Node Embeddings and the Pytorch Geometric Dataset for the static graph
 Settings for this run are controlled by the file `config.yaml`.
 ```bash
 python scripts/dataset.py
 ```
 
-### 6. Train the  BotRGCN model
+### 7. Train the  `BotRGCN` model
 ```bash
 python scripts/train_static_graph.py
 ```
 
-### 6. Build the Snapshots Dataset and train the EvoRGCN model
+### 8. Build the Snapshots Dataset and train the `EvoRGCN` model
 ```bash
 python src/train.py
 ```
@@ -95,8 +100,8 @@ bot-or-not/
 │
 ├── data_analysis/
 ├── model/
-├── src/
 ├── scripts/
+├── src/
 │
 ├── .env
 ├── main.py
