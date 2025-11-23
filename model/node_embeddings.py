@@ -4,6 +4,7 @@ from loguru import logger
 
 from src.utils.cache import save_tensor, load_tensor
 
+
 class NodeEmbeddingBuilder:
     """
     Projects multiple feature blocks (desc, tweet, numeric, categorical)

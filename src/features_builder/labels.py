@@ -6,6 +6,7 @@ import torch
 from loguru import logger
 from src.utils.cache import save_tensor, load_tensor
 
+
 class LabelBuilder:
     """
     Build aligned user labels compatible with ordered users_df.

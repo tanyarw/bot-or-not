@@ -14,7 +14,7 @@ class TextEmbedder:
         t = torch.tensor(f)
 
         if t.ndim == 3:
-            t = t.squeeze(0) # (seq_len, hidden_dim)
+            t = t.squeeze(0)  # (seq_len, hidden_dim)
 
         return t.mean(dim=0)  # (hidden_dim,)
 
