@@ -3,59 +3,50 @@ import torch
 from torch_geometric.data import HeteroData
 from typing import Dict, List, Tuple
 from pathlib import Path
-
+import os
 
 class SnapshotDataset:
     def __init__(
         self,
         snapshots_path: Path,
-        user_embeddings_path: Path,
+        user_embeddings_folder: Path,
         tweet_embeddings_path: Path,
         labels_path: Path,
         user_ids_sorted: List[str],
         tweet_ids_sorted: List[str],
         device: str = "cpu",
     ):
+        self.snapshot_idx = 0
         self.snapshots_path = snapshots_path
         self.device = device
-
-        self.embeddings_user = torch.load(
-            user_embeddings_path, map_location=device, weights_only=False
-        )  # (N, 128)
-        self.embeddings_tweet = torch.load(
-            tweet_embeddings_path, map_location=device, weights_only=False
-        )  # (M, 128)
-        self.labels = torch.load(
-            labels_path, map_location=device, weights_only=False
-        )  # (N,)
+        
+        self.user_embeddings_folder = user_embeddings_folder
+        self.embeddings_tweet = None
+        self.labels = torch.load(labels_path, map_location=device, weights_only=False)  # (N,)
+        
 
         self.user_id_to_idx = {uid: idx for idx, uid in enumerate(user_ids_sorted)}
         self.tweet_id_to_idx = {tid: idx for idx, tid in enumerate(tweet_ids_sorted)}
-
-        self.num_snapshots = 834
-
-    def __len__(self) -> int:
-        return self.num_snapshots
-
+    
     def get_snapshot(self, idx: int) -> Dict:
         with open(self.snapshots_path, "rb") as f:
             for i in range(idx + 1):
                 snapshot = pickle.load(f)
         return snapshot
 
+    def __len__(self):
+        return 834 # Total number of snapshots available
+    
     def create_hetero_data(self, snapshot: Dict) -> Tuple[HeteroData, Dict[str, int]]:
         data = HeteroData()
 
         active_user_ids = snapshot["user_ids"]
         active_user_indices = [self.user_id_to_idx[uid] for uid in active_user_ids]
 
-        local_user_id_to_idx = {
-            uid: local_idx for local_idx, uid in enumerate(active_user_ids)
-        }
-
-        user_embeddings = self.embeddings_user[
-            active_user_indices
-        ]  # (num_active_users, 128)
+        local_user_id_to_idx = {uid: local_idx for local_idx, uid in enumerate(active_user_ids)}
+        
+        user_emb_path = os.path.join(self.user_embeddings_folder, f"snap_{self.snapshot_idx:04d}_embeddings.pt")
+        user_embeddings = torch.load(user_emb_path, map_location=self.device, weights_only=False)  # (num_active_users, 128)
         user_labels = self.labels[active_user_indices]  # (num_active_users,)
 
         data["user"].x = user_embeddings
@@ -65,14 +56,10 @@ class SnapshotDataset:
         active_tweet_ids = snapshot["tweet_ids"]
         active_tweet_indices = [self.tweet_id_to_idx[tid] for tid in active_tweet_ids]
 
-        local_tweet_id_to_idx = {
-            tid: local_idx for local_idx, tid in enumerate(active_tweet_ids)
-        }
-
-        tweet_embeddings = self.embeddings_tweet[
-            active_tweet_indices
-        ]  # (num_active_tweets, 128)
-
+        local_tweet_id_to_idx = {tid: local_idx for local_idx, tid in enumerate(active_tweet_ids)}
+        
+        # tweet_embeddings = self.embeddings_tweet[active_tweet_indices]  # (num_active_tweets, 128)
+        
         # data['tweet'].x = tweet_embeddings
         # data['tweet'].num_nodes = len(active_tweet_ids)
 
@@ -86,6 +73,9 @@ class SnapshotDataset:
             if len(edge_list) > 0:
                 edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
                 data[src_type, relation, dst_type].edge_index = edge_index
+        
+        # Update snapshot index for next call
+        self.snapshot_idx += 1
 
         return data
 
@@ -140,7 +130,8 @@ class SnapshotDataset:
         return edges_dict
 
     def iter_snapshots(self):
-        with open(self.snapshots_path, "rb") as f:
+        self.snapshot_idx = 0
+        with open(self.snapshots_path, 'rb') as f:
             try:
                 while True:
                     snapshot = pickle.load(f)

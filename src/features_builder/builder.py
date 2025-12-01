@@ -33,7 +33,7 @@ class Twibot22DataBuilder:
         self.con = connect(cfg["paths"]["db_path"])
 
         # Output dir
-        self.out_dir = Path(cfg["paths"]["out_dir"])
+        self.out_dir = Path(cfg["paths"]["out_dir"]) / "embeddings"
         self.out_dir.mkdir(exist_ok=True)
 
         # Text embedding model
@@ -80,7 +80,7 @@ class Twibot22DataBuilder:
                 user_df, device=self.device, k=k
             )
 
-        fused_user_embeddings = self.node_emb.fuse(
+        fused_user_embeddings = self.node_emb.static_fuse(
             desc=desc,
             tweet=tweet,
             numeric=numeric,
@@ -93,3 +93,12 @@ class Twibot22DataBuilder:
         self.con.close()
 
         return fused_user_embeddings, label_tensor
+    
+    def build_all_tweets(self):
+        tweet_ids, tweet_embs = self.tweets.embed_all_tweets_sorted()
+        return tweet_ids, tweet_embs
+
+    def build_temporalized_embeddings(self, snapshots_path: Path, max_snapshots: int = 800):
+        self.node_emb.temporal_fuse(
+            snapshots_path, max_snapshots
+        )

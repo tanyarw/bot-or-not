@@ -1,9 +1,9 @@
 from .bot_rgcn import BotRGCN
-from .bot_ergcn import BotEvolvingRGCN
+from .bot_ergcn import BotEvolveRGCN
 
 MODEL_REGISTRY = {
-    "bot_rgcn": BotRGCN,
-    "bot_ergcn": BotEvolvingRGCN,
+    'bot_rgcn': BotRGCN,
+    'bot_ergcn': BotEvolveRGCN,
 }
 
 

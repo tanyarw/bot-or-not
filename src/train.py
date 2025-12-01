@@ -4,52 +4,278 @@ from pathlib import Path
 import time
 import torch
 import torch.nn.functional as F
-from torchmetrics.classification import BinaryAccuracy, BinaryAUROC
+from torchmetrics.classification import BinaryAccuracy, BinaryF1Score
 from torch_geometric.transforms import RandomNodeSplit
-from torch_geometric.loader import NodeLoader
 from loguru import logger
 import duckdb
 
-# Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from dataloader import SnapshotDataset
-from model.bot_ergcn import BotEvolvingRGCN
-import config as cfg
+from model.bot_ergcn import BotEvolveRGCN
+import src.config as cfg
 
 
-class Evaluator:
-    def __init__(self, num_classes: int, device: str):
-        self.acc_metric = BinaryAccuracy().to(device)
-        self.auc_metric = BinaryAUROC().to(device)
+def build_sequence_batch(
+    snapshots: list,
+    device: str
+):
+    A_list = []
+    edge_type_list = []
+    Nodes_list = []
+    mask_list = []
+    y_list = []
+    train_mask_list = []
+    val_mask_list = []
+    
+    # Find max nodes
+    max_nodes = max(
+        hetero_data['user'].num_nodes 
+        for _, hetero_data in snapshots
+    )
+    
+    for _, hetero_data in snapshots:
+        transform = RandomNodeSplit(
+            split='train_rest',
+            num_splits=1,
+            num_val=cfg.VAL_RATIO,
+            num_test=cfg.TEST_RATIO,
+            key='y'
+        )
+        hetero_data = transform(hetero_data)
 
-    @torch.no_grad()
-    def evaluate_snapshot(
-        self, model: torch.nn.Module, hetero_data, mask_name: str, device: str
-    ):
-        model.eval()
+        x, edge_index, edge_type, y = extract_homo_data(hetero_data, device) 
+        num_nodes = x.size(0)
+        
+        # Pad to max_nodes
+        if num_nodes < max_nodes:
+            padding = max_nodes - num_nodes
+            x = F.pad(x, (0, 0, 0, padding), value=0)
+            y = F.pad(y, (0, padding), value=0)
+            
+            train_mask = hetero_data['user'].train_mask
+            val_mask = hetero_data['user'].val_mask
+            train_mask = F.pad(train_mask.to(device), (0, padding), value=False)
+            val_mask = F.pad(val_mask.to(device), (0, padding), value=False)
+        else:
+            train_mask = hetero_data['user'].train_mask.to(device)
+            val_mask = hetero_data['user'].val_mask.to(device)
+        
+        # Mask for TopK
+        topk_mask = torch.zeros(max_nodes, device=device)
+        if num_nodes < max_nodes:
+            topk_mask[num_nodes:] = -float('inf')
+        
+        A_list.append(edge_index)
+        edge_type_list.append(edge_type)
+        Nodes_list.append(x)
+        mask_list.append(topk_mask)
+        y_list.append(y)
+        train_mask_list.append(train_mask)
+        val_mask_list.append(val_mask)
+    
+    return (
+        A_list, edge_type_list, Nodes_list, mask_list,
+        y_list, train_mask_list, val_mask_list
+    )
 
-        # Extract homogeneous graph data
-        x, edge_index, edge_type, y = extract_homo_data(hetero_data, device)
 
-        # Get evaluation mask
-        mask = hetero_data["user"][mask_name]
-        if mask.sum() == 0:
-            return 0.0, 0.0, 0.0
+def train_sequence(
+    model: torch.nn.Module,
+    snapshots: list,
+    optimizer: torch.optim.Optimizer,
+    device: str
+):
+    model.train()
+    (A_list, edge_type_list, Nodes_list, mask_list, y_list, train_mask_list, _) = build_sequence_batch(snapshots, device)
+    
+    if len(A_list) == 0:
+        return 0.0
+    
+    optimizer.zero_grad()
 
-        mask = mask.to(device)
+    out_seq = model(A_list, edge_type_list, Nodes_list, mask_list)
+    
+    total_loss = 0.0
+    num_losses = 0
+    
+    for t in range(len(out_seq)):
+        if train_mask_list[t].sum() == 0:
+            continue
+        
+        loss_t = F.cross_entropy(
+            out_seq[t][train_mask_list[t]], 
+            y_list[t][train_mask_list[t]]
+        )
+        
+        total_loss += loss_t
+        num_losses += 1
+    
+    if num_losses > 0:
+        avg_loss = total_loss / num_losses
+    else:
+        return 0.0
+    
+    avg_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
+    
+    return avg_loss.item()
 
-        # Forward pass
-        out = model(x, edge_index, edge_type)
 
-        loss = F.cross_entropy(out[mask], y[mask])
-        probs = F.softmax(out[mask], dim=-1)
+@torch.no_grad()
+def evaluate_sequence(
+    model: torch.nn.Module,
+    snapshots: list,
+    device: str,
+    mask_type: str = 'val_mask'
+):
+    model.eval()
 
-        accuracy = self.acc_metric(probs[:, 1], y[mask])
-        auc = self.auc_metric(probs[:, 1], y[mask])
+    (A_list, edge_type_list, Nodes_list, mask_list, y_list, train_mask_list, val_mask_list) = build_sequence_batch(snapshots, device)
+    
+    if len(A_list) == 0:
+        return 0.0, 0.0, 0.0
+    
+    out_seq = model(A_list, edge_type_list, Nodes_list, mask_list)
+    
+    acc_metric = BinaryAccuracy().to(device)
+    f1_metric = BinaryF1Score().to(device)
+    
+    total_loss = 0.0
+    total_acc = 0.0
+    total_f1 = 0.0
+    num_evals = 0
+    
+    for t in range(len(out_seq)):
+        eval_mask = val_mask_list[t] if mask_type == 'val_mask' else train_mask_list[t]
+        
+        if eval_mask.sum() == 0:
+            continue
+        
+        loss_t = F.cross_entropy(out_seq[t][eval_mask], y_list[t][eval_mask])
+        probs = F.softmax(out_seq[t][eval_mask], dim=-1)
+        acc = acc_metric(probs[:, 1], y_list[t][eval_mask])
+        f1 = f1_metric(probs[:, 1], y_list[t][eval_mask])
+        
+        total_loss += loss_t.item()
+        total_acc += acc.item()
+        total_f1 += f1.item()
+        num_evals += 1
+    
+    if num_evals > 0:
+        return (
+            total_loss / num_evals,
+            total_acc / num_evals,
+            total_f1 / num_evals
+        )
+    return 0.0, 0.0, 0.0
 
-        return loss.item(), accuracy, auc
 
+def train_epoch_sequences(
+    model: torch.nn.Module,
+    dataset: SnapshotDataset,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+    epoch: int,
+    sequence_length: int = 10
+):
+    logger.info(f"Epoch {epoch + 1}/{cfg.NUM_EPOCHS}")
+    
+    epoch_train_loss = 0.0
+    epoch_val_loss = 0.0
+    epoch_val_acc = 0.0
+    epoch_val_f1 = 0.0
+    num_sequences = 0
+    
+    # Create sequence of snapshots
+    current_sequence = []
+    snapshot_idx = 0
+    total_snapshots = 0
+    
+    for snapshot_dict, hetero_data in dataset.iter_snapshots():
+        if snapshot_idx >= cfg.MAX_SNAPSHOTS:
+            break
+        
+        # Skipping small snapshots
+        if cfg.SKIP_SMALL_SNAPSHOTS and hetero_data['user'].num_nodes < cfg.MIN_USERS_PER_SNAPSHOT:
+            logger.warning(f"Skipping snapshot {snapshot_idx} (too few users)")
+            snapshot_idx += 1
+            continue
+        
+        current_sequence.append((snapshot_dict, hetero_data))
+        total_snapshots += 1
+        
+        if len(current_sequence) > sequence_length:
+            logger.info(
+                f"Processing sequence {num_sequences + 1}: "
+                f"Snapshots {snapshot_idx - len(current_sequence) + 1}-{snapshot_idx + 1}"
+            )
+            
+            train_loss = train_sequence(
+                model, current_sequence, optimizer, device
+            )
+            
+            val_loss, val_acc, val_f1 = evaluate_sequence(
+                model, current_sequence, device, mask_type='val_mask'
+            )
+            
+            logger.info(
+                f"  Train Loss: {train_loss:.4f}, "
+                f"Val Loss: {val_loss:.4f}"
+            )
+
+            logger.info(
+                f"Val Acc: {val_acc:.4f}, "
+                f"Val F1: {val_f1:.4f}"
+            )
+            
+            epoch_train_loss += train_loss
+            epoch_val_loss += val_loss
+            epoch_val_acc += val_acc
+            epoch_val_f1 += val_f1
+            num_sequences += 1
+            
+            # Clear
+            current_sequence = []
+        
+        snapshot_idx += 1
+    
+    # Process remaining snapshots (if any)
+    if len(current_sequence) > 0:
+        logger.info(
+            f"Processing final sequence {num_sequences + 1}: "
+            f"{len(current_sequence)} snapshots"
+        )
+        
+        train_loss = train_sequence(model, current_sequence, optimizer, device)
+        val_loss, val_acc, val_f1 = evaluate_sequence(
+            model, current_sequence, device, mask_type='val_mask'
+        )
+        
+        logger.info(
+            f"  Train Loss: {train_loss:.4f}, "
+            f"Val Loss: {val_loss:.4f}, "
+            f"Val Acc: {val_acc:.4f}, "
+            f"Val F1: {val_f1:.4f}"
+        )
+        
+        epoch_train_loss += train_loss
+        epoch_val_loss += val_loss
+        epoch_val_acc += val_acc
+        epoch_val_f1 += val_f1
+        num_sequences += 1
+    
+    logger.info(f"Processed {total_snapshots} snapshots in {num_sequences} sequences")
+    
+    if num_sequences > 0:
+        return (
+            epoch_train_loss / num_sequences,
+            epoch_val_loss / num_sequences,
+            epoch_val_acc / num_sequences,
+            epoch_val_f1 / num_sequences
+        )
+    return 0.0, 0.0, 0.0, 0.0
 
 def load_sorted_ids(db_path: Path) -> tuple:
     logger.info("Loading sorted user and tweet IDs from database...")
@@ -86,12 +312,10 @@ def load_sorted_ids(db_path: Path) -> tuple:
 
 def extract_homo_data(hetero_data, device="cpu"):
     # Get user data
-    user_x = hetero_data["user"].x
-    user_x = torch.from_numpy(user_x)
-    user_y = hetero_data["user"].y
-    user_y = torch.from_numpy(user_y)
-
-    # Define relation type mapping for user-user edges only
+    user_x = hetero_data['user'].x
+    user_y = hetero_data['user'].y
+    
+    # Relation type mapping (user-user edges only)
     relation_map = {
         ("user", "followers", "user"): 0,
         ("user", "following", "user"): 1,
@@ -121,7 +345,7 @@ def extract_homo_data(hetero_data, device="cpu"):
         edge_index = torch.cat(edge_indices, dim=1).to(device)
         edge_type = torch.cat(edge_types).to(device)
     else:
-        # Create empty tensors if no edges
+        # Empty tensors if no edges
         edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
         edge_type = torch.empty((0,), dtype=torch.long, device=device)
 
@@ -131,119 +355,7 @@ def extract_homo_data(hetero_data, device="cpu"):
     return user_x, edge_index, edge_type, user_y
 
 
-def train_snapshot(
-    model: torch.nn.Module, hetero_data, optimizer: torch.optim.Optimizer, device: str
-):
-    model.train()
-
-    # Extract homogeneous graph data
-    x, edge_index, edge_type, y = extract_homo_data(hetero_data, device)
-
-    # Get train mask
-    train_mask = hetero_data["user"].train_mask
-    if train_mask.sum() == 0:
-        return 0.0
-
-    train_mask = train_mask.to(device)
-
-    optimizer.zero_grad()
-
-    # Forward pass with evolving weights
-    out = model(x, edge_index, edge_type)
-
-    # Compute loss only on training nodes
-    loss = F.cross_entropy(out[train_mask], y[train_mask])
-
-    loss.backward()
-    optimizer.step()
-
-    return loss.item()
-
-
-def train_epoch_sequential(
-    model: torch.nn.Module,
-    dataset: SnapshotDataset,
-    optimizer: torch.optim.Optimizer,
-    device: str,
-    epoch: int,
-):
-    logger.info(f"=== Epoch {epoch + 1}/{cfg.NUM_EPOCHS} ===")
-
-    epoch_train_loss = 0
-    epoch_val_loss = 0
-    epoch_val_acc = 0
-    epoch_val_auc = 0
-    valid_snapshots = 0
-
-    snapshot_idx = 0
-    for snapshot_dict, hetero_data in dataset.iter_snapshots():
-        if snapshot_idx >= 150:
-            break
-        if (snapshot_idx) % 50 == 0:
-            logger.info(f"Processing snapshot {snapshot_idx + 1}/{len(dataset)}")
-            logger.info(f"  Timestamp: {snapshot_dict['timestamp']}")
-            logger.info(
-                f"  Users: {snapshot_dict['num_users']}, "
-                f"Edges: {snapshot_dict['num_edges']}"
-            )
-
-        # Skip snapshots with too few users
-        if (
-            cfg.SKIP_SMALL_SNAPSHOTS
-            and hetero_data["user"].num_nodes < cfg.MIN_USERS_PER_SNAPSHOT
-        ):
-            logger.warning(
-                f"  Skipping snapshot (too few users: {hetero_data['user'].num_nodes})"
-            )
-            snapshot_idx += 1
-            continue
-
-        # Apply random node split for train/val/test
-        transform = RandomNodeSplit(
-            split="train_rest",
-            num_splits=1,
-            num_val=cfg.VAL_RATIO,
-            num_test=cfg.TEST_RATIO,
-            key="y",
-        )
-        hetero_data = transform(hetero_data)
-
-        # Train on this snapshot (weights evolve here)
-        train_loss = train_snapshot(model, hetero_data, optimizer, device)
-
-        # Evaluate on validation set
-        evaluator = Evaluator(num_classes=2, device="cuda")
-        val_loss, val_acc, val_auc = evaluator.evaluate_snapshot(
-            model, hetero_data, "val_mask", device
-        )
-
-        if (snapshot_idx) % 50 == 0:
-            logger.info(f"  Train Loss: {train_loss:.4f}")
-            logger.info(
-                f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val AUC: {val_auc:.4f}"
-            )
-
-        epoch_train_loss += train_loss
-        epoch_val_loss += val_loss
-        epoch_val_acc += val_acc
-        epoch_val_auc += val_auc
-        valid_snapshots += 1
-
-        snapshot_idx += 1
-
-    # Return average metrics
-    if valid_snapshots > 0:
-        return (
-            epoch_train_loss / valid_snapshots,
-            epoch_val_loss / valid_snapshots,
-            epoch_val_acc / valid_snapshots,
-            epoch_val_auc / valid_snapshots,
-        )
-    return 0, 0, 0
-
-
 if __name__ == "__main__":
-    # Device selection
     if torch.cuda.is_available():
         device = "cuda"
         logger.debug("Using CUDA GPU")
@@ -253,41 +365,32 @@ if __name__ == "__main__":
     else:
         device = "cpu"
         logger.debug("Using CPU")
-
-    # Paths
+    
     snapshots_path = os.path.join(cfg.DATA_DIR, "temporalized", "snapshots.pkl")
-    user_embeddings_path = os.path.join(
-        cfg.DATA_DIR, "embeddings", f"user_node_embeddings_128_test.pt"
-    )
-    tweet_embeddings_path = os.path.join(
-        cfg.DATA_DIR, "embeddings", f"tweet_node_embeddings_128_test.pt"
-    )
+    user_embeddings_folder = os.path.join(cfg.DATA_DIR, "embeddings", "temporal")
+    tweet_embeddings_path = os.path.join(cfg.DATA_DIR, "embeddings", "all_tweet_embeddings_sorted.pt")
     labels_path = os.path.join(cfg.DATA_DIR, "embeddings", "labels.pt")
-
-    # Load sorted IDs (only users now)
+    
     user_ids_sorted, tweet_ids_sorted = load_sorted_ids(cfg.DB_PATH)
-
-    # Initialize dataset (no tweet IDs needed anymore)
-    logger.info("Initializing SnapshotDataset...")
+    
     dataset = SnapshotDataset(
         snapshots_path=snapshots_path,
-        user_embeddings_path=user_embeddings_path,
+        user_embeddings_folder=user_embeddings_folder,
         tweet_embeddings_path=tweet_embeddings_path,
         labels_path=labels_path,
         user_ids_sorted=user_ids_sorted,
         tweet_ids_sorted=tweet_ids_sorted,
         device=device,
     )
-    logger.success(f"Dataset initialized with {len(dataset)} snapshots")
-
-    # Initialize EVOLVING RGCN model
-    model = BotEvolvingRGCN(
+    
+    model = BotEvolveRGCN(
         in_channels=cfg.EMBEDDING_DIM,
         hidden_channels=cfg.HIDDEN_CHANNELS,
-        num_relations=2,
-        out_channels=2,
+        num_relations=2,  # followers + following
+        out_channels=2,   # bot vs human
         dropout=cfg.DROPOUT,
         num_layers=2,
+        device=device
     ).to(device)
 
     optimizer = torch.optim.Adam(
@@ -297,66 +400,78 @@ if __name__ == "__main__":
     logger.info(
         f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters"
     )
-    logger.info(f"Number of relation types: 2 (followers, following)")
-
-    # Create model save directory
+    
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
+    logger.info(f"Number of relations: 2 (followers, following)")
+    
     if cfg.SAVE_MODEL:
         os.makedirs(cfg.MODEL_SAVE_PATH, exist_ok=True)
-
+    
+    SEQUENCE_LENGTH = getattr(cfg, 'SEQUENCE_LENGTH', 10)
+    logger.info(f"Processing {SEQUENCE_LENGTH} snapshots per sequence")
+    
     # Training loop
     best_val_acc = 0.0
-    best_val_auc = 0.0
+    best_val_f1 = 0.0
     patience_counter = 0
 
     for epoch in range(cfg.NUM_EPOCHS):
-        current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-
-        train_loss, val_loss, val_acc, val_auc = train_epoch_sequential(
-            model, dataset, optimizer, device, epoch
+        start_time = time.time()
+        
+        train_loss, val_loss, val_acc, val_f1 = train_epoch_sequences(
+            model=model,
+            dataset=dataset,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+            sequence_length=SEQUENCE_LENGTH
         )
-
+        
+        epoch_time = time.time() - start_time
+        
         logger.info(
-            f"Epoch {epoch + 1} Summary - "
+            f"Epoch {epoch + 1}/{cfg.NUM_EPOCHS} Summary - "
             f"Train Loss: {train_loss:.4f}, "
             f"Val Loss: {val_loss:.4f}, "
-            f"Val Acc: {val_acc:.4f},"
-            f" Val AUC: {val_auc:.4f}"
+            f"Val Acc: {val_acc:.4f}, "
+            f"Val F1: {val_f1:.4f} "
+            f"(Duration: {epoch_time/60:.2f} min)"
         )
-
-        end_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        total_time = time.time() - time.mktime(
-            time.strptime(current_time, "%Y-%m-%d %H:%M:%S")
-        )
-        logger.info(
-            f"Epoch {epoch + 1} completed at {end_time} (Duration: {total_time/60:.2f} minutes)"
-        )
-
+        
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            best_val_f1 = val_f1
             patience_counter = 0
 
             if cfg.SAVE_MODEL:
-                model_path = os.path.join(cfg.MODEL_SAVE_PATH, f"evolving_rgcn_best.pt")
-                torch.save(model.state_dict(), model_path)
+                model_path = os.path.join(
+                    cfg.MODEL_SAVE_PATH, 
+                    "evolvegcn_rgcn_best.pt"
+                )
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_acc': val_acc,
+                    'val_f1': val_f1,
+                    'sequence_length': SEQUENCE_LENGTH,
+                }, model_path)
                 logger.success(
-                    f"Best model saved (Val Acc: {val_acc:.4f} and Val AUC: {val_auc:.4f})"
+                    f"Best model saved - "
+                    f"Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}"
                 )
         else:
             patience_counter += 1
 
         # Early stopping
-        if (
-            hasattr(cfg, "EARLY_STOPPING_PATIENCE")
-            and patience_counter >= cfg.EARLY_STOPPING_PATIENCE
-        ):
-            logger.info(f"Early stopping triggered after {epoch + 1} epochs")
-            break
-
-    logger.success(f"Training completed. Best Val Acc: {best_val_acc:.4f}")
-
-    # Save final model
-    if cfg.SAVE_MODEL:
-        model_path = os.path.join(cfg.MODEL_SAVE_PATH, f"evolving_rgcn_best.pt")
-        torch.save(model.state_dict(), model_path)
-        logger.success(f"Final model saved to {model_path}")
+        if hasattr(cfg, 'EARLY_STOPPING_PATIENCE'):
+            if patience_counter >= cfg.EARLY_STOPPING_PATIENCE:
+                logger.info(f"Early stopping at epoch {epoch + 1}")
+                break
+    
+    logger.success(
+        f"Training completed! "
+        f"Best Val Acc: {best_val_acc:.4f}, "
+        f"Best Val F1: {best_val_f1:.4f}"
+    )

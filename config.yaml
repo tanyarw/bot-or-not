@@ -1,4 +1,4 @@
-version_name: "v2.0.0"
+version_name: "v1.0.0"
 
 paths:
   db_path: ${DB_PATH}
@@ -6,8 +6,8 @@ paths:
 
 text:
   model_name: "roberta-base"
-  batch_size: 32
-  pipeline_device: 1
+  batch_size: 256
+  pipeline_device: 0
 
 tweet_processing:
   chunk_size: 10000
@@ -18,12 +18,14 @@ features:
 
 embedding:
   user_embedding_dim: 128
+  tweet_embedding_dim: 128
   projection_activation: "leaky_relu"
+  max_snapshots: 800
 
 logging:
   level: "INFO"
 
-device: mps
+device: cuda
 
 botrgcn:
   split:
