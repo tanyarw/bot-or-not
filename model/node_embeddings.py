@@ -77,7 +77,7 @@ class NodeEmbeddingBuilder:
 
         if out_path.exists():
             logger.info(f"Loading cached fused node embeddings → {fname}")
-            return torch.load(out_path, map_location=self.device)
+            return load_tensor(out_path, device=device)
 
         if self.desc_proj is None:
             logger.info("Initializing node embedding projection layers...")
@@ -99,13 +99,13 @@ class NodeEmbeddingBuilder:
             t = self.tweet_proj(tweet)
             combined = torch.cat([d, t, n, c], dim=1)  # (N, 128)
             fused = self.final_proj(combined)
-            torch.save(fused.cpu(), out_path)
+            save_tensor(fused, out_path)
             logger.success(f"Saved fused node embeddings {out_path}")
             return fused
 
         combined = torch.cat([d, n, c], dim=1)  # (N, 96)
         # No final projection
-        torch.save(combined.cpu(), out_path)
+        save_tensor(combined, out_path)
         logger.success(f"Saved non-tweet node embeddings (raw 96-dim) {out_path}")
         return combined
 

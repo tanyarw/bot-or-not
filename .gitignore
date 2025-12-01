@@ -219,3 +219,7 @@ __marimo__/
 # data files
 data/
 db/
+
+# eda plots
+plots/*
+!plots/.gitkeep

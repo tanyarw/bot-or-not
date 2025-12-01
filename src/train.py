@@ -280,56 +280,66 @@ def train_epoch_sequences(
 def load_sorted_ids(db_path: Path) -> tuple:
     logger.info("Loading sorted user and tweet IDs from database...")
     con = duckdb.connect(str(db_path))
-    
-    user_ids = con.execute(
-        """
+
+    user_ids = (
+        con.execute(
+            """
         SELECT id
         FROM users
         ORDER BY id
         """
-    ).df()['id'].tolist()
-    
-    tweet_ids = con.execute(
-        """
+        )
+        .df()["id"]
+        .tolist()
+    )
+
+    tweet_ids = (
+        con.execute(
+            """
         SELECT id
         FROM tweets
         ORDER BY id
         """
-    ).df()['id'].tolist()
-    
+        )
+        .df()["id"]
+        .tolist()
+    )
+
     con.close()
     logger.success(f"Loaded {len(user_ids)} user IDs and {len(tweet_ids)} tweet IDs")
     return user_ids, tweet_ids
 
 
-def extract_homo_data(hetero_data, device='cpu'):
+def extract_homo_data(hetero_data, device="cpu"):
     # Get user data
     user_x = hetero_data['user'].x
     user_y = hetero_data['user'].y
     
     # Relation type mapping (user-user edges only)
     relation_map = {
-        ('user', 'followers', 'user'): 0,
-        ('user', 'following', 'user'): 1,
+        ("user", "followers", "user"): 0,
+        ("user", "following", "user"): 1,
     }
-    
+
     # Collect all user-user edges
     edge_indices = []
     edge_types = []
-    
+
     for edge_key, edge_data in hetero_data.edge_items():
         if edge_key not in relation_map:
             continue
-        
-        if 'edge_index' not in edge_data:
+
+        if "edge_index" not in edge_data:
             continue
-            
-        edge_index = edge_data['edge_index']
+
+        edge_index = edge_data["edge_index"]
         relation_type = relation_map[edge_key]
-        
+
         edge_indices.append(edge_index)
-        edge_types.append(torch.full((edge_index.size(1),), relation_type, dtype=torch.long))
-    
+        edge_types.append(
+            torch.full((edge_index.size(1),), relation_type, dtype=torch.long)
+        )
+
     # Concatenate all edges
     if len(edge_indices) > 0:
         edge_index = torch.cat(edge_indices, dim=1).to(device)
@@ -341,7 +351,7 @@ def extract_homo_data(hetero_data, device='cpu'):
 
     user_x = user_x.to(device)
     user_y = user_y.to(device)
-    
+
     return user_x, edge_index, edge_type, user_y
 
 
@@ -370,7 +380,7 @@ if __name__ == "__main__":
         labels_path=labels_path,
         user_ids_sorted=user_ids_sorted,
         tweet_ids_sorted=tweet_ids_sorted,
-        device=device
+        device=device,
     )
     
     model = BotEvolveRGCN(
@@ -382,11 +392,13 @@ if __name__ == "__main__":
         num_layers=2,
         device=device
     ).to(device)
-    
+
     optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=cfg.LEARNING_RATE,
-        weight_decay=cfg.WEIGHT_DECAY
+        model.parameters(), lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY
+    )
+
+    logger.info(
+        f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters"
     )
     
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
@@ -402,7 +414,7 @@ if __name__ == "__main__":
     best_val_acc = 0.0
     best_val_f1 = 0.0
     patience_counter = 0
-    
+
     for epoch in range(cfg.NUM_EPOCHS):
         start_time = time.time()
         
@@ -431,7 +443,7 @@ if __name__ == "__main__":
             best_val_acc = val_acc
             best_val_f1 = val_f1
             patience_counter = 0
-            
+
             if cfg.SAVE_MODEL:
                 model_path = os.path.join(
                     cfg.MODEL_SAVE_PATH, 
@@ -451,7 +463,7 @@ if __name__ == "__main__":
                 )
         else:
             patience_counter += 1
-        
+
         # Early stopping
         if hasattr(cfg, 'EARLY_STOPPING_PATIENCE'):
             if patience_counter >= cfg.EARLY_STOPPING_PATIENCE:

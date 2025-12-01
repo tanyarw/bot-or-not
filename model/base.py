@@ -3,7 +3,15 @@ from abc import ABC, abstractmethod
 
 
 class BaseGCNModel(nn.Module, ABC):
-    def __init__(self, in_channels, hidden_channels, num_relations=2, out_channels=2, dropout=0.3, num_layers=2):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        num_relations=2,
+        out_channels=2,
+        dropout=0.3,
+        num_layers=2,
+    ):
         super().__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels

@@ -35,9 +35,7 @@ class mat_GRU_gate(torch.nn.Module):
         t.data.uniform_(-stdv, stdv)
 
     def forward(self, x, hidden):
-        out = self.activation(
-            self.W.matmul(x) + self.U.matmul(hidden) + self.bias
-        )
+        out = self.activation(self.W.matmul(x) + self.U.matmul(hidden) + self.bias)
         return out
 
 
@@ -112,12 +110,12 @@ class mat_GRU_cell(torch.nn.Module):
         
         update = self.update(z_topk, prev_Q)
         reset = self.reset(z_topk, prev_Q)
-        
+
         h_cap = reset * prev_Q
         h_cap = self.htilda(z_topk, h_cap)
-        
+
         new_Q = (1 - update) * prev_Q + update * h_cap
-        
+
         return new_Q
 
 
@@ -202,7 +200,7 @@ class GRCU_RGCN(torch.nn.Module):
             mask = edge_type == r
             if mask.sum() == 0:
                 continue
-            
+
             edge_index_r = edge_index[:, mask]
             row, col = edge_index_r
             
@@ -212,7 +210,7 @@ class GRCU_RGCN(torch.nn.Module):
             deg_inv_sqrt = deg.pow(-0.5)
             deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
             norm = deg_inv_sqrt[row] * deg_inv_sqrt[col]
-            
+
             # Aggregate
             x_transformed = x.matmul(W_relations[r])
             messages = x_transformed[col] * norm.unsqueeze(-1)

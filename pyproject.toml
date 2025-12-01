@@ -16,6 +16,7 @@ dependencies = [
     "pandas>=2.3.3",
     "pytest>=8.4.2",
     "scikit-learn>=1.6.1",
+    "torchmetrics>=1.8.2",
     "tqdm>=4.67.1",
     "transformers>=4.57.1",
 ]
