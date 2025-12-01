@@ -4,6 +4,7 @@ from duckdb import DuckDBPyConnection
 import pandas as pd
 import torch
 from loguru import logger
+from tqdm.auto import tqdm
 
 from src.utils.cache import save_tensor, load_tensor
 from src.utils.text_embed import TextEmbedder
@@ -166,3 +167,83 @@ class TweetBuilder:
         user_tweet_embs = torch.stack(pooled)  # (N, 768)
 
         return user_tweet_embs
+    
+    def embed_all_tweets_sorted(self):
+        """
+        Returns:
+            user_tweet_embs : (num_users, hidden_dim=768)
+        """
+        
+        out_ids = self.out_dir / "all_tweet_ids_sorted.pt"
+        out_embs = self.out_dir / "all_tweet_embeddings_sorted.pt"
+        
+        # Check cache
+        if out_ids.exists() and out_embs.exists():
+            logger.info("Loading cached sorted tweet embeddings...")
+            tweet_ids = load_tensor(out_ids, not_tensor=True)
+            tweet_embs = load_tensor(out_embs)
+            logger.success(f"Loaded {len(tweet_ids):,} sorted tweet embeddings with shape {tweet_embs.shape}")
+            return tweet_ids, tweet_embs
+        
+        logger.info("Streaming tweets from database...")
+        
+        # Get total count for progress
+        total_tweets = self.con.execute(
+            "SELECT COUNT(*) FROM tweets WHERE text IS NOT NULL"
+        ).fetchone()[0]
+        
+        logger.info(f"Processing {total_tweets:,} tweets...")
+        
+        chunk_size = self.cfg["tweet_processing"]["chunk_size"]
+        all_embs = []
+        all_ids = []
+        
+        # Stream from database in chunks
+        offset = 0
+        chunk_idx = 0
+        
+        with tqdm(total=total_tweets, desc="Embedding tweets") as pbar:
+            while offset < total_tweets:
+                chunk_idx += 1
+                
+                # Fetch chunk directly from database
+                df_chunk = self.con.execute(
+                    f"""
+                    SELECT id AS tweet_id, text
+                    FROM tweets
+                    WHERE text IS NOT NULL
+                    ORDER BY id ASC
+                    LIMIT {chunk_size} OFFSET {offset}
+                    """
+                ).df()
+                
+                if len(df_chunk) == 0:
+                    break
+                
+                chunk_ids = df_chunk["tweet_id"].astype(str).tolist()
+                chunk_texts = df_chunk["text"].fillna("").astype(str).tolist()
+                
+                # Process this chunk
+                chunk_emb = self.embedder.embed_batch(
+                    chunk_texts, 
+                    show_progress=False  # We have outer progress bar
+                )
+                
+                all_embs.append(chunk_emb.cpu())
+                all_ids.extend(chunk_ids)
+                
+                offset += len(df_chunk)
+                pbar.update(len(df_chunk))
+                
+                # Free memory
+                del df_chunk, chunk_ids, chunk_texts
+        
+        tweet_embs = torch.cat(all_embs, dim=0)
+        
+        save_tensor(tweet_embs, out_embs)
+        save_tensor(all_ids, out_ids, not_tensor=True)
+        
+        logger.success(f"Saved {out_ids}")
+        logger.success(f"Saved {out_embs} with shape {tweet_embs.shape}")
+        
+        return all_ids, tweet_embs

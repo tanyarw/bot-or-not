@@ -24,6 +24,10 @@ def main():
     cfg["paths"]["out_dir"] = str(DATASET_ROOT)
 
     builder = Twibot22DataBuilder(cfg)
+    if True:
+        snapshots_path = DATASET_ROOT / "temporalized" / "snapshots.pkl"
+        builder.build_temporalized_embeddings(snapshots_path, cfg["embedding"]["max_snapshots"])
+        return
     fused, labels = builder.build_all()
 
     write_metadata(cfg, DATASET_ROOT)
