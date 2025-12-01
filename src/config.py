@@ -24,6 +24,7 @@ HIDDEN_CHANNELS = int(os.getenv("HIDDEN_CHANNELS", "128"))
 DROPOUT = float(os.getenv("DROPOUT", "0.5"))
 
 # Early stopping
+MAX_SNAPSHOTS = int(os.getenv("MAX_SNAPSHOTS", "800"))
 EARLY_STOPPING_PATIENCE = int(os.getenv("PATIENCE", "5"))
 MIN_DELTA = float(os.getenv("MIN_DELTA", "0.001"))
 
@@ -33,5 +34,7 @@ SAVE_MODEL = os.getenv("SAVE_MODEL", "True").lower() == "true"
 MODEL_SAVE_PATH = os.path.join(os.getcwd(), os.getenv("MODEL_SAVE_PATH", "checkpoints"))
 
 # Snapshot processing
+MAX_NODES = int(os.getenv("MAX_NODES", "21359"))
 MIN_USERS_PER_SNAPSHOT = int(os.getenv("MIN_USERS_PER_SNAPSHOT", "10"))
 SKIP_SMALL_SNAPSHOTS = os.getenv("SKIP_SMALL_SNAPSHOTS", "True").lower() == "true"
+SEQUENCE_LENGTH = int(os.getenv("SEQUENCE_LENGTH", "10"))
