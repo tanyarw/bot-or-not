@@ -4,7 +4,7 @@ from loguru import logger
 from collections import defaultdict
 from tqdm import tqdm
 import pickle
-
+from src.utils.cache import save_tensor, load_tensor
 class NodeEmbeddingBuilder:
     """
     Projects multiple feature blocks (desc, tweet, numeric, categorical)
@@ -77,7 +77,7 @@ class NodeEmbeddingBuilder:
 
         if out_path.exists():
             logger.info(f"Loading cached fused node embeddings → {fname}")
-            return load_tensor(out_path, device=device)
+            return load_tensor(out_path, device=self.device)
 
         if self.desc_proj is None:
             logger.info("Initializing node embedding projection layers...")
